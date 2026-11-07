@@ -29,18 +29,20 @@ jobs:
           grep -q "^VERSION = $want\$" tether.pro || { echo "tether.pro VERSION isn't $want"; exit 1; }
           grep -q "^pkgver=$want\$" pkgbuild/PKGBUILD || { echo "PKGBUILD pkgver isn't $want"; exit 1; }
 
+      # As a normal user, like people run Tether: root can open any device,
+      # so the serial permission checks would mean nothing.
       - name: Test
-        run: bin/test
-
-      # makepkg won't run as root, and the checkout is fresh, so the app
-      # itself is built here for the first time, with the update source set.
-      - name: Build the package
-        env:
-          TETHER_REPO: ${{ github.repository }}
         run: |
           useradd -m builder
           chown -R builder .
-          su builder -c "cd pkgbuild && TETHER_REPO=$TETHER_REPO makepkg -f --nodeps"
+          su builder -c "bin/test"
+
+      # makepkg won't run as root either. The app itself is built here for
+      # the first time, with the update source set.
+      - name: Build the package
+        env:
+          TETHER_REPO: ${{ github.repository }}
+        run: su builder -c "cd pkgbuild && TETHER_REPO=$TETHER_REPO makepkg -f --nodeps"
 
       - name: Publish the release
         if: startsWith(github.ref, 'refs/tags/')
