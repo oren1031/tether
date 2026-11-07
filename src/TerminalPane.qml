@@ -102,7 +102,7 @@ FocusScope {
         anchors.leftMargin: 10
         anchors.rightMargin: 4
         anchors.topMargin: 8
-        anchors.bottomMargin: 4
+        anchors.bottomMargin: touchKeys.visible ? touchKeys.height + 4 : 4
 
         sourceComponent: TerminalView {
             id: term
@@ -243,4 +243,80 @@ FocusScope {
         }
     }
     onReconnectRequested: reconnectTimer.stop()
+
+    // Keys a phone keyboard lacks, under the focused terminal on touch screens.
+    Rectangle {
+        id: touchKeys
+        visible: (Qt.platform.os === "android" || Qt.platform.os === "ios") && pane.active && !pane.ended
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: 44
+        color: Style.toolbar
+        Rectangle { width: parent.width; height: 1; color: Style.separator }
+        Flickable {
+            anchors.fill: parent
+            anchors.topMargin: 1
+            contentWidth: keyRow.width
+            clip: true
+            flickableDirection: Flickable.HorizontalFlick
+            Row {
+                id: keyRow
+                height: parent.height
+                padding: 4
+                spacing: 4
+                Repeater {
+                    model: [
+                        { label: "Esc", key: "esc" }, { label: "Tab", key: "tab" },
+                        { label: "Ctrl", sticky: "ctrl" }, { label: "Alt", sticky: "alt" },
+                        { label: "←", key: "left" }, { label: "↓", key: "down" }, { label: "↑", key: "up" },
+                        { label: "→", key: "right" }, { label: "|", text: "|" }, { label: "/", text: "/" },
+                        { label: "-", text: "-" }, { label: "~", text: "~" }, { label: "Home", key: "home" },
+                        { label: "End", key: "end" }, { label: "PgUp", key: "pgup" }, { label: "PgDn", key: "pgdn" },
+                        { label: "Paste", paste: true }
+                    ]
+                    delegate: Rectangle {
+                        required property var modelData
+                        readonly property bool on: pane.terminal !== null
+                            && ((modelData.sticky === "ctrl" && pane.terminal.stickyCtrl)
+                                || (modelData.sticky === "alt" && pane.terminal.stickyAlt))
+                        width: Math.max(44, keyLabel.implicitWidth + 20)
+                        height: 36
+                        radius: 7
+                        color: on ? Style.accent : keyArea.pressed ? Style.fillPressed : Style.fill
+                        Text {
+                            id: keyLabel
+                            anchors.centerIn: parent
+                            text: parent.modelData.label
+                            font.family: Style.fontFamily
+                            font.pixelSize: Style.fontSize
+                            font.weight: Font.Medium
+                            color: parent.on ? Style.onAccent : Style.label
+                        }
+                        MouseArea {
+                            id: keyArea
+                            anchors.fill: parent
+                            onClicked: {
+                                const t = pane.terminal
+                                if (!t)
+                                    return
+                                const m = parent.modelData
+                                if (m.sticky === "ctrl")
+                                    t.stickyCtrl = !t.stickyCtrl
+                                else if (m.sticky === "alt")
+                                    t.stickyAlt = !t.stickyAlt
+                                else if (m.key)
+                                    t.sendKey(m.key)
+                                else if (m.text)
+                                    t.sendText(m.text)
+                                else if (m.paste)
+                                    t.pasteClipboard()
+                                t.forceActiveFocus()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

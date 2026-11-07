@@ -35,6 +35,9 @@ class TerminalView : public QQuickPaintedItem {
     Q_PROPERTY(int scrollbackLines READ scrollbackLines NOTIFY scrollChanged)
     Q_PROPERTY(int scrollOffset READ scrollOffset WRITE setScrollOffset NOTIFY scrollChanged)
     Q_PROPERTY(bool hasSelection READ hasSelection NOTIFY selectionChanged)
+    // On-screen Ctrl and Alt for touch keyboards: they apply to the next key.
+    Q_PROPERTY(bool stickyCtrl READ stickyCtrl WRITE setStickyCtrl NOTIFY stickyChanged)
+    Q_PROPERTY(bool stickyAlt READ stickyAlt WRITE setStickyAlt NOTIFY stickyChanged)
 
 public:
     explicit TerminalView(QQuickItem *parent = nullptr);
@@ -71,6 +74,13 @@ public:
     // Types text as if pasted from the keyboard, without bracketed paste:
     // snippets use it, and \r presses Enter.
     Q_INVOKABLE void sendText(const QString &text);
+    // A named key from an on-screen row: esc, tab, up, down, left, right,
+    // home, end, pgup, pgdn; honors the sticky Ctrl and Alt.
+    Q_INVOKABLE void sendKey(const QString &name);
+    bool stickyCtrl() const { return m_stickyCtrl; }
+    void setStickyCtrl(bool on) { if (on != m_stickyCtrl) { m_stickyCtrl = on; emit stickyChanged(); } }
+    bool stickyAlt() const { return m_stickyAlt; }
+    void setStickyAlt(bool on) { if (on != m_stickyAlt) { m_stickyAlt = on; emit stickyChanged(); } }
     Q_INVOKABLE void copyClipboard();
     Q_INVOKABLE void pasteClipboard();
     Q_INVOKABLE void clearScrollback();
@@ -95,6 +105,7 @@ signals:
     void selectionChanged();
     void finished(int exitCode);
     void bell();
+    void stickyChanged();
 
 protected:
     void geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) override;
@@ -185,6 +196,9 @@ private:
     QPoint m_selectionEnd{-1, -1};
     QPoint m_selectionAnchor{-1, -1};
     bool m_selecting = false;
+    bool m_stickyCtrl = false;
+    bool m_stickyAlt = false;
+    VTermModifier takeSticky();
     int m_selectUnit = 0; // 0 characters, 1 words, 2 lines
     qint64 m_lastDoubleClick = 0;
     int m_mouseButtonsDown = 0;

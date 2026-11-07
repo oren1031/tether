@@ -27,7 +27,12 @@ ApplicationWindow {
     palette.highlight: Style.accent
     palette.highlightedText: Style.onAccent
 
+    // Phones and narrow windows: the sidebar takes the whole width while it's
+    // open and steps aside once a session starts.
+    readonly property bool narrow: width < 720
+    readonly property bool touch: Qt.platform.os === "android" || Qt.platform.os === "ios"
     property bool sidebarVisible: true
+    onNarrowChanged: if (narrow && tabModel.count > 0) sidebarVisible = false
     property bool quitting: false
     readonly property var currentPage: tabs.currentIndex >= 0 && tabs.currentIndex < pages.count
                                        ? pages.itemAt(tabs.currentIndex) : null
@@ -55,6 +60,8 @@ ApplicationWindow {
                          workingDirectory: "", splittable: false, profile: { kind: "local" } }
         tabModel.append({ launchJson: JSON.stringify(launch), title: launch.title })
         tabs.currentIndex = tabModel.count - 1
+        if (narrow)
+            sidebarVisible = false
         updateInstalling = true
         Qt.callLater(focusActivePane)
     }
@@ -63,6 +70,8 @@ ApplicationWindow {
         const launch = { files: true, title: profile.name, profile: profile, splittable: true }
         tabModel.append({ launchJson: JSON.stringify(launch), title: qsTr("Files on %1").arg(profile.name) })
         tabs.currentIndex = tabModel.count - 1
+        if (narrow)
+            sidebarVisible = false
         Qt.callLater(focusActivePane)
     }
 
@@ -90,6 +99,8 @@ ApplicationWindow {
         }
         tabModel.append({ launchJson: JSON.stringify(launch), title: launch.title })
         tabs.currentIndex = tabModel.count - 1
+        if (narrow)
+            sidebarVisible = false
         Qt.callLater(focusActivePane)
     }
 
@@ -230,7 +241,7 @@ ApplicationWindow {
         Sidebar {
             id: sidebar
             visible: win.sidebarVisible
-            Layout.preferredWidth: 272
+            Layout.preferredWidth: win.narrow ? win.width : 272
             Layout.fillHeight: true
             onConnectRequested: profile => win.openTab(profile)
             onEditRequested: profile => {
@@ -257,6 +268,7 @@ ApplicationWindow {
         }
 
         ColumnLayout {
+            visible: !(win.narrow && win.sidebarVisible)
             Layout.fillWidth: true
             Layout.fillHeight: true
             spacing: 0

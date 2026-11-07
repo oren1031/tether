@@ -10,6 +10,8 @@
 #include <QFileInfo>
 #include <QFontMetricsF>
 #include <QGuiApplication>
+#include <QHash>
+#include <QInputMethod>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QPainter>
@@ -371,6 +373,29 @@ void TerminalView::write(const QByteArray &data) {
 void TerminalView::feed(const QByteArray &data) {
     vterm_input_write(m_vt, data.constData(), size_t(data.size()));
     vterm_screen_flush_damage(m_screen);
+}
+
+VTermModifier TerminalView::takeSticky() {
+    int mod = VTERM_MOD_NONE;
+    if (m_stickyCtrl)
+        mod |= VTERM_MOD_CTRL;
+    if (m_stickyAlt)
+        mod |= VTERM_MOD_ALT;
+    setStickyCtrl(false);
+    setStickyAlt(false);
+    return VTermModifier(mod);
+}
+
+void TerminalView::sendKey(const QString &name) {
+    static const QHash<QString, VTermKey> keys{
+        {"esc", VTERM_KEY_ESCAPE}, {"tab", VTERM_KEY_TAB}, {"up", VTERM_KEY_UP}, {"down", VTERM_KEY_DOWN},
+        {"left", VTERM_KEY_LEFT}, {"right", VTERM_KEY_RIGHT}, {"home", VTERM_KEY_HOME}, {"end", VTERM_KEY_END},
+        {"pgup", VTERM_KEY_PAGEUP}, {"pgdn", VTERM_KEY_PAGEDOWN}, {"enter", VTERM_KEY_ENTER},
+        {"backspace", VTERM_KEY_BACKSPACE}};
+    if (!keys.contains(name))
+        return;
+    scrollToBottom();
+    vterm_keyboard_key(m_vt, keys.value(name), takeSticky());
 }
 
 void TerminalView::sendText(const QString &text) {
@@ -809,7 +834,7 @@ void TerminalView::keyPressEvent(QKeyEvent *event) {
         clearSelection();
         scrollToBottom();
         for (const char32_t c : text.toUcs4())
-            vterm_keyboard_unichar(m_vt, uint32_t(c), VTERM_MOD_NONE);
+            vterm_keyboard_unichar(m_vt, uint32_t(c), takeSticky());
         event->accept();
         return;
     }
@@ -827,8 +852,18 @@ void TerminalView::inputMethodEvent(QInputMethodEvent *event) {
     if (!text.isEmpty()) {
         clearSelection();
         scrollToBottom();
-        for (const char32_t c : text.toUcs4())
-            vterm_keyboard_unichar(m_vt, uint32_t(c), VTERM_MOD_NONE);
+        for (const char32_t c : text.toUcs4()) {
+            // Touch keyboards send Enter as a newline character.
+            if (c == '\n') {
+                vterm_keyboard_key(m_vt, VTERM_KEY_ENTER, takeSticky());
+                continue;
+            }
+            uint32_t ch = uint32_t(c);
+            const VTermModifier mod = takeSticky();
+            if ((mod & VTERM_MOD_CTRL) && ch >= 'A' && ch <= 'Z')
+                ch += 32;
+            vterm_keyboard_unichar(m_vt, ch, mod);
+        }
     }
     event->accept();
 }
@@ -842,7 +877,9 @@ QVariant TerminalView::inputMethodQuery(Qt::InputMethodQuery query) const {
     case Qt::ImFont:
         return m_font;
     case Qt::ImHints:
-        return int(Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase);
+        // Sensitive data keeps touch keyboards from holding words back for
+        // suggestions, so each letter reaches the terminal as it's typed.
+        return int(Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase | Qt::ImhSensitiveData | Qt::ImhPreferLatin);
     default:
         return QQuickPaintedItem::inputMethodQuery(query);
     }
@@ -990,6 +1027,11 @@ void TerminalView::mouseMoveEvent(QMouseEvent *event) {
 }
 
 void TerminalView::mouseReleaseEvent(QMouseEvent *event) {
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
+    // A tap brings up the on-screen keyboard.
+    if (!m_selecting || m_selectionStart == m_selectionEnd)
+        QGuiApplication::inputMethod()->show();
+#endif
     if (m_mouseButtonsDown > 0 && reportMouse(event->modifiers())) {
         const QPoint cell = cellFromPixel(event->position());
         const VTermModifier mod = modifiers(event->modifiers());

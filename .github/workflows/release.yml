@@ -167,8 +167,73 @@ jobs:
           name: windows
           path: dist/Tether-*-setup.exe
 
+  # Android 9 and later, on 64-bit ARM phones and tablets. The APK is signed
+  # with the release key kept in the repository's secrets, so each version
+  # installs over the last; without it, a throwaway key is used.
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install the Android SDK parts
+        run: |
+          sdk="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$sdk" --licenses >/dev/null || true
+          "$sdk" --install "ndk;27.2.12479018" "platforms;android-35" "build-tools;35.0.0" >/dev/null
+          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.10.*'
+          host: 'linux'
+          target: 'android'
+          arch: 'android_arm64_v8a'
+          autodesktop: true
+          cache: true
+
+      - name: Build the APK
+        env:
+          TETHER_REPO: ${{ github.repository }}
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          version=$(sed -n 's/^VERSION = //p' tether.pro)
+          deploy=$(find "$RUNNER_WORKSPACE/Qt" -name androiddeployqt -type f | head -n 1)
+          echo "androiddeployqt: $deploy"
+          mkdir build-android
+          cd build-android
+          "$QT_ROOT_DIR/bin/qmake" ../tether.pro ANDROID_ABIS=arm64-v8a
+          make -j"$(nproc)"
+          make INSTALL_ROOT="$PWD/android-build" install
+          if [ -n "$KEYSTORE" ]; then
+            echo "$KEYSTORE" | base64 -d > release.p12
+            password="$KEYSTORE_PASSWORD"
+          else
+            echo "No release key in the secrets; signing with a throwaway key."
+            password=throwaway
+            keytool -genkeypair -keystore release.p12 -storetype pkcs12 -alias tether -keyalg RSA -keysize 2048 \
+              -validity 3650 -dname "CN=Tether" -storepass "$password" -keypass "$password"
+          fi
+          "$deploy" --input android-tether-deployment-settings.json --output android-build \
+            --android-platform android-35 --gradle --release \
+            --sign release.p12 tether --storetype pkcs12 --storepass "$password" --keypass "$password"
+          apk=$(find android-build -name '*-release-signed.apk' | head -n 1)
+          [ -n "$apk" ] || apk=$(find android-build -name '*.apk' | head -n 1)
+          cp "$apk" "../Tether-$version-android-arm64.apk"
+          ls -la ..
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: Tether-*-android-arm64.apk
+
   publish:
-    needs: [arch, appimage, windows]
+    needs: [arch, appimage, windows, android]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:

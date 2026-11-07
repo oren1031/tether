@@ -310,6 +310,11 @@ QVariantMap Backend::launch(const QVariantMap &profile) const {
 #else
         if (program.isEmpty())
             program = qEnvironmentVariable("SHELL");
+#ifdef Q_OS_ANDROID
+        // Android's shell lives in /system, and apps can run it.
+        if (program.isEmpty() || !QFileInfo(program).isExecutable())
+            program = "/system/bin/sh";
+#endif
         if (program.isEmpty() || !QFileInfo(program).isExecutable())
             program = "/bin/sh";
 #endif

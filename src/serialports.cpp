@@ -12,7 +12,7 @@
 #ifdef TETHER_QTSERIAL
 #include <QSerialPortInfo>
 #endif
-#ifndef Q_OS_WIN
+#if !defined(Q_OS_WIN) && !defined(Q_OS_ANDROID)
 #include <grp.h>
 #include <pwd.h>
 #include <sys/stat.h>
@@ -46,8 +46,9 @@ QString SerialPorts::labelFor(const QString &byIdName) {
     return label.trimmed();
 }
 
-#ifdef Q_OS_WIN
-// Windows names ports COM1, COM2, …; Qt knows what each one is.
+#if defined(Q_OS_WIN) || defined(Q_OS_ANDROID)
+// Windows names ports COM1, COM2, …; Qt knows what each one is. Android
+// apps can't open serial devices this way, so the list stays empty there.
 void SerialPorts::refresh() {
     QVariantList devices;
 #ifdef TETHER_QTSERIAL
