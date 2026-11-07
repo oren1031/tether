@@ -4,7 +4,7 @@
 
 // Passwords in Windows Credential Manager, under "Tether/<id>", for the
 // vault on Windows; Linux keeps them in the Secret Service keyring instead.
-namespace WinCred {
+namespace Credentials {
 QString store(const QString &id, const QString &label, const QString &secret); // error or empty
 QString lookup(const QString &id);
 void remove(const QString &id);

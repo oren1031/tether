@@ -719,11 +719,11 @@ QString Backend::saveIdentity(const QVariantMap &input, const QString &password,
 
 #ifdef Q_OS_WIN
     if (!password.isEmpty()) {
-        if (const QString error = WinCred::store(id, "Tether: " + login["name"].toString(), password); !error.isEmpty())
+        if (const QString error = Credentials::store(id, "Tether: " + login["name"].toString(), password); !error.isEmpty())
             return error;
         login["hasPassword"] = true;
     } else if (clearPassword && login["hasPassword"].toBool()) {
-        WinCred::remove(id);
+        Credentials::remove(id);
         login["hasPassword"] = false;
     }
 #else
@@ -763,7 +763,7 @@ QString Backend::removeIdentity(const QString &id) {
         return {};
 #ifdef Q_OS_WIN
     if (login.value("hasPassword").toBool())
-        WinCred::remove(id);
+        Credentials::remove(id);
 #else
     if (login.value("hasPassword").toBool() && !tool("secret-tool").isEmpty())
         clearSecret(tool("secret-tool"), id);

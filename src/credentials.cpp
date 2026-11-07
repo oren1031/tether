@@ -11,7 +11,7 @@
 #include <windows.h>
 #include <wincred.h>
 
-namespace WinCred {
+namespace Credentials {
 
 static std::wstring target(const QString &id) { return ("Tether/" + id).toStdWString(); }
 
@@ -65,10 +65,10 @@ int askpass(const QString &prompt) {
     return 0;
 }
 
-} // namespace WinCred
+} // namespace Credentials
 
 #else
-namespace WinCred {
+namespace Credentials {
 QString store(const QString &, const QString &, const QString &) { return QStringLiteral("Not on Windows."); }
 QString lookup(const QString &) { return {}; }
 void remove(const QString &) {}

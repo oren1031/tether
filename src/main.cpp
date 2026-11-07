@@ -18,6 +18,7 @@
 #include "terminalview.h"
 #include "updater.h"
 #include "credentials.h"
+#include "selftest.h"
 
 #ifndef APP_VERSION
 #define APP_VERSION "0.0.0"
@@ -32,9 +33,11 @@
 int main(int argc, char *argv[]) {
     // ssh runs tether.exe as its askpass helper on Windows: answer and exit.
     if (qEnvironmentVariable("TETHER_ASKPASS") == "1")
-        return WinCred::askpass(argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString());
+        return Credentials::askpass(argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString());
 
     QGuiApplication app(argc, argv);
+    if (app.arguments().contains("--self-test"))
+        return runSelfTest();
     app.setApplicationName("tether");
     app.setApplicationVersion(APP_VERSION);
 

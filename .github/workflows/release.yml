@@ -46,6 +46,9 @@ jobs:
           TETHER_REPO: ${{ github.repository }}
         run: su builder -c "cd pkgbuild && TETHER_REPO=$TETHER_REPO makepkg -f --nodeps"
 
+      - name: Self-test
+        run: su builder -c "QT_QPA_PLATFORM=offscreen build/tether --self-test"
+
       - uses: actions/upload-artifact@v4
         with:
           name: arch
@@ -93,6 +96,9 @@ jobs:
           ./linuxdeploy-x86_64.AppImage --appdir AppDir -e build/tether \
             -d pkgbuild/tether.desktop -i pkgbuild/tether.svg --plugin qt --output appimage
 
+      - name: Self-test the AppImage
+        run: QT_QPA_PLATFORM=offscreen ./Tether-*-x86_64.AppImage --self-test
+
       - uses: actions/upload-artifact@v4
         with:
           name: appimage
@@ -128,6 +134,16 @@ jobs:
       - name: Gather Qt beside it
         shell: cmd
         run: windeployqt --release --qmldir src --no-translations --no-system-d3d-compiler --no-opengl-sw build\bin\tether.exe
+
+      # tether.exe is a GUI program, so its report goes through a file.
+      - name: Self-test
+        shell: pwsh
+        run: |
+          $p = Start-Process build\bin\tether.exe -ArgumentList '--self-test' -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput selftest.txt -RedirectStandardError selftest-err.txt
+          Get-Content selftest.txt
+          Get-Content selftest-err.txt
+          exit $p.ExitCode
 
       - name: Make the installer
         shell: pwsh

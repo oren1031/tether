@@ -34,6 +34,7 @@ HEADERS += \
     src/terminalview.h \
     src/updater.h \
     src/credentials.h \
+    src/selftest.h \
     src/serialports.h \
     src/theme.h \
     src/translator.h
@@ -47,6 +48,7 @@ SOURCES += \
     src/terminalview.cpp \
     src/updater.cpp \
     src/credentials.cpp \
+    src/selftest.cpp \
     src/serialports.cpp \
     src/theme.cpp \
     src/translator.cpp
