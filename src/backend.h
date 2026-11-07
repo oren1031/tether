@@ -22,6 +22,8 @@ class Backend : public QObject {
     Q_PROPERTY(bool moshAvailable READ moshAvailable CONSTANT)
     Q_PROPERTY(bool tmuxAvailable READ tmuxAvailable CONSTANT)
     Q_PROPERTY(QString syncStatus READ syncStatus NOTIFY syncStatusChanged)
+    // A serial device name as this system writes them, for hints.
+    Q_PROPERTY(QString exampleDevice READ exampleDevice CONSTANT)
     Q_PROPERTY(QString logDirectory READ logDirectory CONSTANT)
     Q_PROPERTY(QString loadError READ loadError CONSTANT)
 
@@ -75,6 +77,11 @@ public:
     // mirrored to tether-hosts.json in the syncFolder setting, for Syncthing,
     // Dropbox, or a git repository to carry between computers.
     QString syncStatus() const { return m_syncStatus; }
+#ifdef Q_OS_WIN
+    static QString exampleDevice() { return QStringLiteral("COM3"); }
+#else
+    static QString exampleDevice() { return QStringLiteral("/dev/ttyUSB0"); }
+#endif
     QString loadError() const { return m_loadError; }
 
     // Each returns an error to show, or an empty string on success.

@@ -97,11 +97,17 @@ Or download a file from the [latest release](https://github.com/oren1031/tether/
 | --- | --- | --- |
 | Arch, Omarchy | `tether-*-x86_64.pkg.tar.zst` | `sudo pacman -U tether-*.pkg.tar.zst` |
 | Ubuntu 22.04+, other Linux | `Tether-*-x86_64.AppImage` | `chmod +x Tether-*.AppImage` and run it (Ubuntu needs `libfuse2t64`, or `libfuse2` on 22.04) |
-| Windows | coming soon | |
+| Windows 10 (1809+) and 11 | `Tether-*-setup.exe` | Run it; it installs for your user, no admin needed |
 | Android | coming soon | |
 
 Tether uses `ssh`, `picocom`, and optionally `tmux` and `mosh` from the system.
-On Ubuntu: `sudo apt install openssh-client picocom tmux`.
+On Ubuntu: `sudo apt install openssh-client picocom tmux`. Without picocom (as on
+Windows) Tether opens serial ports itself.
+
+On Windows, Tether uses the OpenSSH client built into Windows (Settings → System →
+Optional features → OpenSSH Client, on by default in current versions), opens COM
+ports itself, and keeps vault passwords in Windows Credential Manager. Local tabs run
+PowerShell. Connection sharing, local tmux, and mosh are Linux-only.
 
 To build it yourself:
 

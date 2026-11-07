@@ -43,7 +43,7 @@ TSheet {
         forwards.clear()
         for (const f of (p.forwards || []))
             forwards.append({ type: f.type, spec: f.spec })
-        device.editText = p.device || (serialPorts.devices.length ? serialPorts.devices[0].stablePath : "/dev/ttyUSB0")
+        device.editText = p.device || (serialPorts.devices.length ? serialPorts.devices[0].stablePath : backend.exampleDevice)
         baud.editText = String(p.baud || 115200)
         choose(dataBits, p.dataBits || 8)
         choose(parity, p.parity || "none")

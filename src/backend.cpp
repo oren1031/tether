@@ -214,7 +214,7 @@ QString Backend::validate(const QVariantMap &p) {
     if (kind == "serial") {
         const QString device = p.value("device").toString().trimmed();
         if (!devicePattern.match(device).hasMatch() || device.contains(".."))
-            return tr("Choose a serial device, like /dev/ttyUSB0.");
+            return tr("Choose a serial device, like %1.").arg(exampleDevice());
         const int baud = p.value("baud", 115200).toInt();
         if (baud < 50 || baud > 16000000)
             return tr("The baud rate must be between 50 and 16000000.");
@@ -474,12 +474,13 @@ bool Backend::sharesConnections() const {
 QVariantMap Backend::quickConnect(const QString &text) const {
     const QString input = text.trimmed();
     QVariantMap p;
-    if (input.startsWith("/dev/")) {
+    static const QRegularExpression comPort(R"(^COM\d{1,3}(\s|$))", QRegularExpression::CaseInsensitiveOption);
+    if (input.startsWith("/dev/") || comPort.match(input).hasMatch()) {
         const QStringList parts = input.split(QRegularExpression("\\s+"));
         p = {{"kind", "serial"}, {"name", parts[0]}, {"device", parts[0]},
              {"baud", parts.size() > 1 ? parts[1].toInt() : 115200}};
         if (parts.size() > 2)
-            return {{"error", tr("Type a device and an optional baud rate, like /dev/ttyUSB0 9600.")}};
+            return {{"error", tr("Type a device and an optional baud rate, like %1 9600.").arg(exampleDevice())}};
     } else {
         QString host = input, user;
         int port = 22;

@@ -57,8 +57,10 @@ void SerialPorts::refresh() {
     });
     for (const QSerialPortInfo &port : ports) {
         QString label = port.description();
-        if (!port.manufacturer().isEmpty() && !label.contains(port.manufacturer()))
-            label = port.manufacturer() + " " + label;
+        // Windows' own driver reports "(Standard port types)" as the maker.
+        const QString maker = port.manufacturer();
+        if (!maker.isEmpty() && !maker.startsWith('(') && !label.contains(maker))
+            label = maker + " " + label;
         devices << QVariantMap{{"path", port.portName()}, {"stablePath", port.portName()},
                                {"label", label.trimmed().isEmpty() ? port.portName() : label.trimmed()},
                                {"accessible", true}, {"problem", QString()}};
