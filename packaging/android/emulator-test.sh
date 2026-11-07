@@ -26,6 +26,7 @@ sleep 15
 adb exec-out screencap -p > "$shot"
 if ! adb logcat -d | grep -q "SELF-TEST PASSED"; then
     echo "── the app's log ──"
-    adb logcat -d | grep -iE "tether|qt\.|libtether|QtActivity|DEBUG|crash" | tail -120
+    adb logcat -d | grep -E "oren1031|libtether|QtActivity|Qt[A-Z]|qt\.|UnsatisfiedLink|dlopen|linker|AndroidRuntime|F DEBUG|E DEBUG|crash_dump|libcrypto|libssh" \
+        | grep -v "NamespaceManager\|netd\|MagicTether" | tail -150
     exit 1
 fi
