@@ -190,7 +190,9 @@ jobs:
       - uses: jurplel/install-qt-action@v4
         with:
           version: '6.10.*'
-          host: 'linux'
+          # Qt 6.7 and later list Android under all_os; autodesktop adds the
+          # Linux Qt that the Android build's tools need.
+          host: 'all_os'
           target: 'android'
           arch: 'android_arm64_v8a'
           autodesktop: true
