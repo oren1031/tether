@@ -125,7 +125,7 @@ ApplicationWindow {
             return
         if (currentPage && currentPage.activePane)
             currentPage.activePane.focusTerminal()
-        else if (sidebarVisible)
+        else if (sidebarVisible && !touch)
             sidebar.focusSearch()
     }
 
@@ -162,7 +162,9 @@ ApplicationWindow {
         updater.startAutomaticChecks(backend.settings.checkUpdates)
         if (backend.loadError)
             showMessage(qsTr("Saved hosts"), backend.loadError)
-        Qt.callLater(sidebar.focusSearch)
+        // On touch screens focusing the search would pop the keyboard up.
+        if (!touch)
+            Qt.callLater(sidebar.focusSearch)
     }
 
     ListModel { id: tabModel }
