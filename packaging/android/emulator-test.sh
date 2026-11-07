@@ -24,4 +24,8 @@ adb shell am force-stop "$pkg"
 adb shell am start -W -n "$pkg/$activity"
 sleep 15
 adb exec-out screencap -p > "$shot"
-adb logcat -d | grep -q "SELF-TEST PASSED"
+if ! adb logcat -d | grep -q "SELF-TEST PASSED"; then
+    echo "── the app's log ──"
+    adb logcat -d | grep -iE "tether|qt\.|libtether|QtActivity|DEBUG|crash" | tail -120
+    exit 1
+fi
