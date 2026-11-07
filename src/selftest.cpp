@@ -24,10 +24,18 @@ int failures = 0;
 QStringList qmlProblems;
 QtMessageHandler previousHandler = nullptr;
 
-void report(bool ok, const QString &what, const QString &detail = {}) {
-    std::printf("%s %s%s\n", ok ? "ok  " : "FAIL", qPrintable(what),
-                detail.isEmpty() ? "" : qPrintable("  (" + detail + ")"));
+// Android has no console; its log (logcat) gets the report there.
+void print(const QString &line) {
+#ifdef Q_OS_ANDROID
+    qInfo().noquote() << "tether-self-test:" << line;
+#else
+    std::printf("%s\n", qPrintable(line));
     std::fflush(stdout);
+#endif
+}
+
+void report(bool ok, const QString &what, const QString &detail = {}) {
+    print(QString("%1 %2%3").arg(ok ? "ok  " : "FAIL", what, detail.isEmpty() ? QString() : "  (" + detail + ")"));
     if (!ok)
         ++failures;
 }
@@ -57,10 +65,13 @@ int finishSelfTest(QQmlApplicationEngine &engine, const QStringList &arguments) 
     }
     const int shotIndex = int(arguments.indexOf("--self-test")) + 1;
     const QString shot = shotIndex < arguments.size() ? arguments.at(shotIndex) : QString();
+#ifndef Q_OS_ANDROID
+    // On Android the emulator test captures the screen itself.
     if (window && !shot.isEmpty() && shot.endsWith(".png")) {
         const QImage image = window->grabWindow();
         report(!image.isNull() && image.save(shot), "save a screenshot", shot);
     }
+#endif
     report(qmlProblems.isEmpty(), "no interface errors", qmlProblems.join(" | ").left(600));
 
     // 1. A program in a terminal: its output, its exit code, and the size it sees.
@@ -77,6 +88,8 @@ int finishSelfTest(QQmlApplicationEngine &engine, const QStringList &arguments) 
 #ifdef Q_OS_WIN
         const bool started = view.start(qEnvironmentVariable("COMSPEC", "cmd.exe"),
                                         {"/d", "/c", "echo tether-self-test & mode con | findstr /i Columns & exit 7"});
+#elif defined(Q_OS_ANDROID)
+        const bool started = view.start("/system/bin/sh", {"-c", "echo tether-self-test; stty size; exit 7"});
 #else
         const bool started = view.start("/bin/sh", {"-c", "echo tether-self-test; stty size; exit 7"});
 #endif
@@ -122,10 +135,8 @@ int finishSelfTest(QQmlApplicationEngine &engine, const QStringList &arguments) 
 
     // 3. ssh, which Tether runs for hosts.
     const QString ssh = QStandardPaths::findExecutable("ssh");
-    std::printf("info ssh: %s\n", ssh.isEmpty() ? "not found" : qPrintable(ssh));
-
-    std::printf("%s\n", failures ? "SELF-TEST FAILED" : "SELF-TEST PASSED");
-    std::fflush(stdout);
+    print("info ssh: " + (ssh.isEmpty() ? QString("not found") : ssh));
+    print(failures ? "SELF-TEST FAILED" : "SELF-TEST PASSED");
     qInstallMessageHandler(previousHandler);
     return failures ? 1 : 0;
 }

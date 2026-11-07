@@ -204,38 +204,70 @@ jobs:
           KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
+          sudo apt-get install -y librsvg2-bin >/dev/null
           version=$(sed -n 's/^VERSION = //p' tether.pro)
-          deploy=$(find "$RUNNER_WORKSPACE/Qt" -name androiddeployqt -type f | head -n 1)
-          echo "androiddeployqt: $deploy"
-          mkdir build-android
-          cd build-android
-          "$QT_ROOT_DIR/bin/qmake" ../tether.pro ANDROID_ABIS=arm64-v8a
-          make -j"$(nproc)"
-          make INSTALL_ROOT="$PWD/android-build" install
-          if [ -n "$KEYSTORE" ]; then
-            echo "$KEYSTORE" | base64 -d > release.p12
-            password="$KEYSTORE_PASSWORD"
-          else
-            echo "No release key in the secrets; signing with a throwaway key."
-            password=throwaway
-            keytool -genkeypair -keystore release.p12 -storetype pkcs12 -alias tether -keyalg RSA -keysize 2048 \
-              -validity 3650 -dname "CN=Tether" -storepass "$password" -keypass "$password"
-          fi
-          "$deploy" --input android-tether-deployment-settings.json --output android-build \
-            --android-platform android-35 --gradle --release \
-            --sign release.p12 tether --storetype pkcs12 --storepass "$password" --keypass "$password"
-          apk=$(find android-build -name '*-release-signed.apk' | head -n 1)
-          [ -n "$apk" ] || apk=$(find android-build -name '*.apk' | head -n 1)
-          cp "$apk" "../Tether-$version-android-arm64.apk"
-          ls -la ..
+          packaging/android/build-apk.sh arm64-v8a "$PWD/Tether-$version-android-arm64.apk"
 
       - uses: actions/upload-artifact@v4
         with:
           name: android
           path: Tether-*-android-arm64.apk
 
+  # The same app built for x86_64 and run in an Android emulator: the
+  # self-test, then a screenshot of it running.
+  android-emulator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install the Android SDK parts
+        run: |
+          sdk="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$sdk" --licenses >/dev/null || true
+          "$sdk" --install "ndk;27.2.12479018" "platforms;android-35" "build-tools;35.0.0" >/dev/null
+          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          sudo apt-get install -y librsvg2-bin >/dev/null
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.10.*'
+          host: 'all_os'
+          target: 'android'
+          arch: 'android_x86_64'
+          autodesktop: true
+          cache: true
+
+      - name: Build the APK
+        run: packaging/android/build-apk.sh x86_64 "$PWD/Tether-test-x86_64.apk"
+
+      - name: Let the emulator use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Self-test in the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: packaging/android/emulator-test.sh Tether-test-x86_64.apk tether-android.png
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-screenshot
+          path: tether-android.png
+
   publish:
-    needs: [arch, appimage, windows, android]
+    needs: [arch, appimage, windows, android, android-emulator]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
