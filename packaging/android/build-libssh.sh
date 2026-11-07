@@ -23,6 +23,7 @@ if [ ! -d android_openssl/ssl_3 ]; then
     git -C android_openssl fetch -q --depth 1 origin "$openssl_commit"
     git -C android_openssl checkout -q FETCH_HEAD
 fi
+# Libraries per ABI; the headers are shared, in ssl_3/include.
 ssl="$work/android_openssl/ssl_3/$abi"
 
 curl -fsSLO "https://www.libssh.org/files/${libssh_version%.*}/libssh-$libssh_version.tar.xz"
@@ -35,7 +36,7 @@ cmake -S "libssh-$libssh_version" -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$out" \
     -DBUILD_SHARED_LIBS=OFF -DWITH_EXAMPLES=OFF -DUNIT_TESTING=OFF -DCLIENT_TESTING=OFF \
     -DWITH_GSSAPI=OFF -DWITH_SERVER=OFF -DWITH_ZLIB=OFF -DWITH_PCAP=OFF -DWITH_NACL=OFF \
-    -DOPENSSL_ROOT_DIR="$ssl" -DOPENSSL_INCLUDE_DIR="$ssl/include" \
+    -DOPENSSL_ROOT_DIR="$ssl" -DOPENSSL_INCLUDE_DIR="$work/android_openssl/ssl_3/include" \
     -DOPENSSL_CRYPTO_LIBRARY="$ssl/libcrypto.a" -DOPENSSL_SSL_LIBRARY="$ssl/libssl.a" \
     -DOPENSSL_USE_STATIC_LIBS=ON
 cmake --build build -j"$(nproc)"
