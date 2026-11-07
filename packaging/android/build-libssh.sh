@@ -30,12 +30,15 @@ curl -fsSLO "https://www.libssh.org/files/${libssh_version%.*}/libssh-$libssh_ve
 echo "$libssh_sha256  libssh-$libssh_version.tar.xz" | sha256sum -c -
 tar xf "libssh-$libssh_version.tar.xz"
 
+# Android's glob has no GLOB_TILDE; libssh only globs ssh config Include
+# lines, which Tether doesn't read, so it's left out.
 cmake -S "libssh-$libssh_version" -B build -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" \
     -DANDROID_ABI="$abi" -DANDROID_PLATFORM=android-28 \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$out" \
     -DBUILD_SHARED_LIBS=OFF -DWITH_EXAMPLES=OFF -DUNIT_TESTING=OFF -DCLIENT_TESTING=OFF \
     -DWITH_GSSAPI=OFF -DWITH_SERVER=OFF -DWITH_ZLIB=OFF -DWITH_PCAP=OFF -DWITH_NACL=OFF \
+    -DHAVE_GLOB_H=OFF \
     -DOPENSSL_ROOT_DIR="$ssl" -DOPENSSL_INCLUDE_DIR="$work/android_openssl/ssl_3/include" \
     -DOPENSSL_CRYPTO_LIBRARY="$ssl/libcrypto_3.so" -DOPENSSL_SSL_LIBRARY="$ssl/libssl_3.so"
 cmake --build build -j"$(nproc)"
