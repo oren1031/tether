@@ -65,7 +65,7 @@ jobs:
 
       - uses: jurplel/install-qt-action@v4
         with:
-          version: '6.8.3'
+          version: '6.10.*'
           cache: true
 
       - name: Build the terminal widget

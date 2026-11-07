@@ -112,7 +112,7 @@ cd tether && bin/install
 
 ## Build
 
-Needs Qt 6.5 or newer, qmltermwidget for Qt 6, picocom, openssh, and util-linux.
+Needs Qt 6.9 or newer, qmltermwidget for Qt 6, picocom, openssh, and util-linux.
 Optional: tmux and mosh for sessions that survive drops, and libsecret with a
 keyring for saved passwords.
 
