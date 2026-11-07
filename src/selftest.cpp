@@ -138,6 +138,45 @@ int finishSelfTest(QQmlApplicationEngine &engine, const QStringList &arguments) 
 #endif
 
     // 3. ssh, which Tether runs for hosts.
+    // 3. Optionally a real login with the built-in ssh:
+    //    --ssh-test user@host:port <private key file>
+#ifdef TETHER_LIBSSH
+    const int sshIndex = int(arguments.indexOf("--ssh-test"));
+    if (sshIndex >= 0 && sshIndex + 2 < arguments.size()) {
+        const QString target = arguments.at(sshIndex + 1), key = arguments.at(sshIndex + 2);
+        const QString user = target.section('@', 0, 0), hostPort = target.section('@', 1);
+        TerminalView view;
+        view.setSize(QSizeF(900, 400));
+        QEventLoop loop;
+        int exitCode = -1;
+        QObject::connect(&view, &TerminalView::finished, &loop, [&](int code) {
+            exitCode = code;
+            loop.quit();
+        });
+        // A first connection asks about the host key; answer as a person would.
+        bool answered = false;
+        QTimer watch;
+        watch.setInterval(200);
+        QObject::connect(&watch, &QTimer::timeout, &loop, [&] {
+            if (!answered && view.screenText(20).contains("continue connecting")) {
+                answered = true;
+                view.sendText("yes\r");
+            }
+        });
+        watch.start();
+        QTimer::singleShot(40000, &loop, &QEventLoop::quit);
+        view.startSsh({{"host", hostPort.section(':', 0, 0)}, {"port", hostPort.section(':', 1).toInt()},
+                       {"user", user}, {"identityFile", key},
+                       {"knownHosts", QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/selftest_known_hosts"},
+                       {"command", "echo tether-ssh-$((40+2)); exit 4"}});
+        loop.exec();
+        const QString text = view.screenText(30);
+        report(text.contains("tether-ssh-42"), "log in with the built-in ssh and run a command",
+               text.right(300).replace('\n', " | "));
+        report(exitCode == 4, "get the remote exit code", QString::number(exitCode));
+    }
+#endif
+
     const QString ssh = QStandardPaths::findExecutable("ssh");
 #ifdef TETHER_LIBSSH
     report(true, "built-in ssh", QString("libssh %1").arg(QString::fromLatin1(ssh_version(0))));

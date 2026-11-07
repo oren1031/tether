@@ -255,6 +255,20 @@ jobs:
       - name: Build the APK
         run: packaging/android/build-apk.sh x86_64 "$PWD/Tether-test-x86_64.apk"
 
+      # A throwaway sshd on this machine for the built-in ssh to log in to.
+      - name: Start an sshd to test against
+        run: |
+          command -v /usr/sbin/sshd >/dev/null || sudo apt-get install -y openssh-server >/dev/null
+          t="$RUNNER_TEMP/sshd"
+          mkdir -p "$t"
+          ssh-keygen -q -t ed25519 -N "" -f "$t/host"
+          ssh-keygen -q -t ed25519 -N "" -f "$t/client"
+          cp "$t/client.pub" "$t/authorized_keys"
+          printf 'Port 2222\nListenAddress 0.0.0.0\nHostKey %s/host\nAuthorizedKeysFile %s/authorized_keys\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nStrictModes no\nPidFile %s/sshd.pid\n' "$t" "$t" "$t" > "$t/sshd_config"
+          /usr/sbin/sshd -f "$t/sshd_config" -E "$t/sshd.log"
+          echo "SSH_TEST=$(whoami)@10.0.2.2:2222" >> "$GITHUB_ENV"
+          echo "SSH_TEST_KEY=$t/client" >> "$GITHUB_ENV"
+
       - name: Let the emulator use KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
