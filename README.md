@@ -81,15 +81,29 @@ Tether says which group a device needs when it can't open it.
 
 ## Install
 
-On Arch and Omarchy, download the package from the
-[latest release](https://github.com/oren1031/tether/releases/latest) and run:
+**Linux** (Arch, Omarchy, Ubuntu, Fedora, and others), in a terminal:
 
 ```sh
-sudo pacman -U tether-*-x86_64.pkg.tar.zst
+curl -fsSL https://raw.githubusercontent.com/oren1031/tether/main/install.sh | sh
 ```
 
-After that, Tether tells you when a new version is out and installs it for you.
-Or build it yourself:
+On Arch-based systems that installs the pacman package; everywhere else it
+installs the AppImage into `~/.local/bin` and adds Tether to the app launcher.
+Tether then tells you when a new version is out and installs it for you.
+
+Or download a file from the [latest release](https://github.com/oren1031/tether/releases/latest):
+
+| System | File | Install |
+| --- | --- | --- |
+| Arch, Omarchy | `tether-*-x86_64.pkg.tar.zst` | `sudo pacman -U tether-*.pkg.tar.zst` |
+| Ubuntu 22.04+, other Linux | `Tether-*-x86_64.AppImage` | `chmod +x Tether-*.AppImage` and run it (Ubuntu needs `libfuse2t64`, or `libfuse2` on 22.04) |
+| Windows | coming soon | |
+| Android | coming soon | |
+
+Tether uses `ssh`, `picocom`, and optionally `tmux` and `mosh` from the system.
+On Ubuntu: `sudo apt install openssh-client picocom tmux`.
+
+To build it yourself:
 
 ```sh
 git clone https://github.com/oren1031/tether.git

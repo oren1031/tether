@@ -452,9 +452,11 @@ private slots:
         const QVariantList assets{
             QVariantMap{{"name", "tether-debug-0.3.0-1-x86_64.pkg.tar.zst"}},
             QVariantMap{{"name", "tether-0.3.0-1-x86_64.pkg.tar.zst"}},
-            QVariantMap{{"name", "Tether-0.3.0-setup.exe"}}};
+            QVariantMap{{"name", "Tether-0.3.0-setup.exe"}},
+            QVariantMap{{"name", "Tether-0.3.0-x86_64.AppImage"}}};
         QCOMPARE(Updater::pickAsset(assets, "pacman")["name"].toString(), QString("tether-0.3.0-1-x86_64.pkg.tar.zst"));
         QCOMPARE(Updater::pickAsset(assets, "windows")["name"].toString(), QString("Tether-0.3.0-setup.exe"));
+        QCOMPARE(Updater::pickAsset(assets, "appimage")["name"].toString(), QString("Tether-0.3.0-x86_64.AppImage"));
         QVERIFY(Updater::pickAsset(assets, "page").isEmpty());
         Updater none({}, "0.2.0");
         QVERIFY(!none.configured());

@@ -40,6 +40,11 @@ ApplicationWindow {
     property bool updateInstalling: false
 
     function installUpdate(command) {
+        if (updater.installKind === "appimage") {
+            if (!updater.replaceAppImage())
+                showMessage(qsTr("Update"), updater.message || qsTr("The update couldn't be installed."))
+            return
+        }
         if (updater.installKind === "windows") {
             if (!updater.launchInstaller())
                 showMessage(qsTr("Update"), qsTr("The installer couldn't start. Get it from the release page."))

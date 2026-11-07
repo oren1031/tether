@@ -5,6 +5,6 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 mkdir -p "$ROOT/build/tests"
 cd "$ROOT/build/tests"
 
-qmake6 "$ROOT/tests/tether_tests.pro"
+"${QMAKE:-qmake6}" "$ROOT/tests/tether_tests.pro"
 make -j"$(nproc)"
 QT_QPA_PLATFORM=offscreen ./tether_tests

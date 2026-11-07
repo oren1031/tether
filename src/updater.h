@@ -24,7 +24,7 @@ class Updater : public QObject {
     Q_PROPERTY(QString message READ message NOTIFY changed)
     Q_PROPERTY(double progress READ progress NOTIFY changed)
     Q_PROPERTY(QString downloadedFile READ downloadedFile NOTIFY changed)
-    Q_PROPERTY(QString installKind READ installKind CONSTANT) // pacman, windows, page
+    Q_PROPERTY(QString installKind READ installKind CONSTANT) // pacman, appimage, windows, page
 
 public:
     explicit Updater(const QString &repository, const QString &currentVersion, QObject *parent = nullptr);
@@ -51,6 +51,8 @@ public:
     Q_INVOKABLE void restart();
     // Windows: starts the setup program, which closes Tether and reopens it.
     Q_INVOKABLE bool launchInstaller();
+    // AppImage: swaps the downloaded file in for the running one and restarts.
+    Q_INVOKABLE bool replaceAppImage();
 
     // -1, 0, or 1, comparing "1.2.10" with "v1.2.9" and the like.
     static int compareVersions(const QString &a, const QString &b);

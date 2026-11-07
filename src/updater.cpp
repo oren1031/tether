@@ -14,6 +14,8 @@
 #include <QStandardPaths>
 #include <QSysInfo>
 
+#include <cstdio>
+
 Updater::Updater(const QString &repository, const QString &currentVersion, QObject *parent)
     : QObject(parent), m_repository(repository), m_current(currentVersion) {
     m_timer.setInterval(6 * 60 * 60 * 1000);
@@ -24,8 +26,10 @@ QString Updater::installKind() const {
 #ifdef Q_OS_WIN
     return "windows";
 #else
-    if (QFileInfo::exists("/usr/bin/pacman") && QFileInfo::exists("/var/lib/pacman/local")
-        && !qEnvironmentVariableIsSet("APPIMAGE"))
+    // An AppImage replaces its own file; the Arch package goes through pacman.
+    if (qEnvironmentVariableIsSet("APPIMAGE"))
+        return "appimage";
+    if (QFileInfo::exists("/usr/bin/pacman") && QFileInfo::exists("/var/lib/pacman/local"))
         return "pacman";
     return "page";
 #endif
@@ -58,6 +62,7 @@ QVariantMap Updater::pickAsset(const QVariantList &assets, const QString &kind) 
         const QString name = asset.value("name").toString();
         const bool match = kind == "pacman" ? name.endsWith("-x86_64.pkg.tar.zst") && !name.contains("-debug-")
                          : kind == "windows" ? name.endsWith("-setup.exe")
+                         : kind == "appimage" ? name.endsWith("-x86_64.AppImage")
                          : false;
         if (match)
             return asset;
@@ -178,6 +183,29 @@ bool Updater::launchInstaller() {
         return false;
     if (!QProcess::startDetached(command["program"].toString(), command["args"].toStringList()))
         return false;
+    QCoreApplication::quit();
+    return true;
+}
+
+bool Updater::replaceAppImage() {
+    const QString current = qEnvironmentVariable("APPIMAGE");
+    if (installKind() != "appimage" || m_file.isEmpty() || current.isEmpty())
+        return false;
+    // Copy beside the old file, then rename over it: the running copy keeps
+    // its open file, and a failure leaves the old one in place.
+    const QString staged = current + ".new";
+    QFile::remove(staged);
+    if (!QFile::copy(m_file, staged)) {
+        setState("error", tr("Couldn't write next to %1.").arg(current));
+        return false;
+    }
+    QFile::setPermissions(staged, QFile::permissions(current) | QFile::ExeOwner | QFile::ReadOwner);
+    if (::rename(QFile::encodeName(staged).constData(), QFile::encodeName(current).constData()) != 0) {
+        QFile::remove(staged);
+        setState("error", tr("Couldn't replace %1.").arg(current));
+        return false;
+    }
+    QProcess::startDetached(current, {});
     QCoreApplication::quit();
     return true;
 }

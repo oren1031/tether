@@ -1,5 +1,6 @@
-# Pushing a tag like v0.3.0 tests Tether, builds the Arch package, and
-# publishes it as a GitHub release, which installed copies offer as an update.
+# Pushing a tag like v0.3.0 tests Tether, builds the Arch package and the
+# AppImage, and publishes them as a GitHub release, which installed copies
+# offer as an update. Running it by hand builds everything without publishing.
 name: Release
 
 on:
@@ -17,7 +18,7 @@ jobs:
     steps:
       - name: Install build tools and Qt
         run: |
-          pacman -Syu --noconfirm --needed base-devel git github-cli \
+          pacman -Syu --noconfirm --needed base-devel git \
             qt6-base qt6-declarative qt6-svg qt6-wayland qmltermwidget openssh picocom
 
       - uses: actions/checkout@v4
@@ -44,16 +45,85 @@ jobs:
           TETHER_REPO: ${{ github.repository }}
         run: su builder -c "cd pkgbuild && TETHER_REPO=$TETHER_REPO makepkg -f --nodeps"
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch
+          path: pkgbuild/tether-[0-9]*-x86_64.pkg.tar.zst
+
+  # Built on the oldest supported Ubuntu, so the AppImage runs on it and
+  # anything newer, with Qt and the terminal widget inside.
+  appimage:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libgl1-mesa-dev libxkbcommon-dev \
+            libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libfuse2 file
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          cache: true
+
+      - name: Build the terminal widget
+        run: |
+          git clone https://github.com/Swordfish90/qmltermwidget.git "$RUNNER_TEMP/qmltermwidget"
+          cd "$RUNNER_TEMP/qmltermwidget"
+          git checkout ce8e09a
+          qmake
+          make -j"$(nproc)"
+          make install
+
+      - name: Test
+        env:
+          QMAKE: qmake
+        run: bin/test
+
+      - name: Build Tether
+        env:
+          QMAKE: qmake
+          TETHER_REPO: ${{ github.repository }}
+        run: bin/build
+
+      - name: Package the AppImage
+        run: |
+          base=https://github.com/linuxdeploy
+          wget -q "$base/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+          wget -q "$base/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage"
+          chmod +x linuxdeploy*.AppImage
+          version=$(sed -n 's/^VERSION = //p' tether.pro)
+          export QML_SOURCES_PATHS="$PWD/src" EXTRA_QT_MODULES="svg" LDAI_OUTPUT="Tether-$version-x86_64.AppImage"
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir -e build/tether \
+            -d pkgbuild/tether.desktop -i pkgbuild/tether.svg --plugin qt --output appimage
+          # The terminal's color schemes and keyboard layouts sit beside its plugin.
+          ls AppDir/usr/qml/QMLTermWidget
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: Tether-*-x86_64.AppImage
+
+  publish:
+    needs: [arch, appimage]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          git config --global --add safe.directory "$PWD"
-          files=$(ls pkgbuild/tether-[0-9]*-x86_64.pkg.tar.zst)
+          ls -la dist
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" $files --clobber --repo "$GITHUB_REPOSITORY"
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$GITHUB_REF_NAME" $files --repo "$GITHUB_REPOSITORY" \
+            gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
               --title "Tether ${GITHUB_REF_NAME#v}" --generate-notes
           fi
