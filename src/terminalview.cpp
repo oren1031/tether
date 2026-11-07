@@ -22,6 +22,9 @@
 #ifdef TETHER_QTSERIAL
 #include <QSerialPort>
 #endif
+#ifdef TETHER_LIBSSH
+#include "sshsession.h"
+#endif
 
 // libvterm calls back through plain functions; these hand each call to the view.
 struct TerminalCallbacks {
@@ -101,6 +104,14 @@ TerminalView::TerminalView(QQuickItem *parent) : QQuickPaintedItem(parent) {
 }
 
 TerminalView::~TerminalView() {
+#ifdef TETHER_LIBSSH
+    // Stop the connection's thread before the screen it writes to goes away.
+    if (m_ssh) {
+        m_ssh->disconnect(this);
+        m_ssh->stop();
+        m_ssh->wait(5000);
+    }
+#endif
     if (m_pty) {
         m_pty->disconnect(this);
         m_pty->terminate();
@@ -236,6 +247,10 @@ void TerminalView::resizeTerminal() {
     vterm_screen_flush_damage(m_screen);
     if (m_pty)
         m_pty->resize(cols, rows);
+#ifdef TETHER_LIBSSH
+    if (m_ssh)
+        m_ssh->resize(cols, rows);
+#endif
     m_scrollOffset = qMin(m_scrollOffset, int(m_scrollback.size()));
     emit sizeChanged();
     emit scrollChanged();
@@ -244,7 +259,46 @@ void TerminalView::resizeTerminal() {
 
 // ── Running a program ──────────────────────────────────────────────────────
 
+bool TerminalView::startSsh(const QVariantMap &settings) {
+#ifdef TETHER_LIBSSH
+    if (m_ssh) {
+        m_ssh->disconnect(this);
+        m_ssh->stop();
+        m_ssh->deleteLater();
+    }
+    QVariantMap s = settings;
+    s.insert("columns", m_cols);
+    s.insert("rows", m_rows);
+    m_ssh = new SshSession(s, this);
+    connect(m_ssh, &SshSession::dataReceived, this, [this](const QByteArray &data) {
+        if (m_log) {
+            m_log->write(data);
+            m_log->flush();
+        }
+        feed(data);
+    }, Qt::QueuedConnection);
+    connect(m_ssh, &SshSession::finished, this, [this](int code) {
+        m_sshRunning = false;
+        emit runningChanged();
+        emit finished(code);
+    }, Qt::QueuedConnection);
+    m_sshRunning = true;
+    m_ssh->start();
+    emit runningChanged();
+    return true;
+#else
+    Q_UNUSED(settings)
+    feed(("\r\n" + tr("This build can't make ssh connections itself.") + "\r\n").toUtf8());
+    emit finished(255);
+    return false;
+#endif
+}
+
 bool TerminalView::running() const {
+#ifdef TETHER_LIBSSH
+    if (m_ssh)
+        return m_sshRunning;
+#endif
 #ifdef TETHER_QTSERIAL
     if (m_serial)
         return m_serial->isOpen();
@@ -338,6 +392,10 @@ bool TerminalView::start(const QString &program, const QStringList &args, const 
 }
 
 void TerminalView::terminate() {
+#ifdef TETHER_LIBSSH
+    if (m_ssh)
+        m_ssh->stop();
+#endif
 #ifdef TETHER_QTSERIAL
     if (m_serial && m_serial->isOpen()) {
         m_serial->close();
@@ -350,6 +408,13 @@ void TerminalView::terminate() {
 }
 
 void TerminalView::write(const QByteArray &data) {
+#ifdef TETHER_LIBSSH
+    if (m_ssh) {
+        if (m_sshRunning)
+            m_ssh->write(data);
+        return;
+    }
+#endif
 #ifdef TETHER_QTSERIAL
     if (m_serial) {
         if (!m_serial->isOpen())

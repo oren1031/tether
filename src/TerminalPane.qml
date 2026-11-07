@@ -155,6 +155,8 @@ FocusScope {
                 logFile = pane.launch.logPath || ""
                 if (pane.launch.serial)
                     startSerial(pane.launch.serial)
+                else if (pane.launch.ssh)
+                    startSsh(pane.launch.ssh)
                 else
                     start(pane.launch.program || "", pane.launch.args || [], pane.launch.workingDirectory || "",
                           pane.launch.environment || [])

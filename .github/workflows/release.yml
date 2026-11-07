@@ -20,7 +20,7 @@ jobs:
       - name: Install build tools and Qt
         run: |
           pacman -Syu --noconfirm --needed base-devel git \
-            qt6-base qt6-declarative qt6-svg qt6-wayland openssh picocom
+            qt6-base qt6-declarative qt6-svg qt6-wayland openssh picocom libssh
 
       - uses: actions/checkout@v4
 
@@ -198,13 +198,18 @@ jobs:
           autodesktop: true
           cache: true
 
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/tether-libssh
+          key: libssh-0.12.2-openssl-b71f147-arm64-v8a-${{ hashFiles('packaging/android/build-libssh.sh') }}
+
       - name: Build the APK
         env:
           TETHER_REPO: ${{ github.repository }}
           KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
-          sudo apt-get install -y librsvg2-bin >/dev/null
+          sudo apt-get install -y librsvg2-bin ninja-build >/dev/null
           version=$(sed -n 's/^VERSION = //p' tether.pro)
           packaging/android/build-apk.sh arm64-v8a "$PWD/Tether-$version-android-arm64.apk"
 
@@ -231,7 +236,7 @@ jobs:
           yes | "$sdk" --licenses >/dev/null || true
           "$sdk" --install "ndk;27.2.12479018" "platforms;android-35" "build-tools;35.0.0" >/dev/null
           echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
-          sudo apt-get install -y librsvg2-bin >/dev/null
+          sudo apt-get install -y librsvg2-bin ninja-build >/dev/null
 
       - uses: jurplel/install-qt-action@v4
         with:
@@ -241,6 +246,11 @@ jobs:
           arch: 'android_x86_64'
           autodesktop: true
           cache: true
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/tether-libssh
+          key: libssh-0.12.2-openssl-b71f147-x86_64-${{ hashFiles('packaging/android/build-libssh.sh') }}
 
       - name: Build the APK
         run: packaging/android/build-apk.sh x86_64 "$PWD/Tether-test-x86_64.apk"

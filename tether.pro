@@ -21,6 +21,21 @@ win32 {
 }
 # Opening serial ports without picocom, on Windows and Android, and on Linux
 # when Qt Serial Port is installed.
+# ssh without an ssh program, on Android, through libssh (LIBSSH_DIR points at
+# a build of it there). CONFIG+=tether_libssh tries it on other systems.
+android|tether_libssh {
+    DEFINES += TETHER_LIBSSH
+    HEADERS += src/sshsession.h
+    SOURCES += src/sshsession.cpp
+    isEmpty(LIBSSH_DIR) {
+        LIBS += -lssh
+    } else {
+        # Static libssh and OpenSSL (packaging/android/build-libssh.sh).
+        INCLUDEPATH += $$LIBSSH_DIR/include
+        DEFINES += LIBSSH_STATIC
+        LIBS += $$LIBSSH_DIR/lib/libssh.a $$LIBSSH_DIR/lib/libcrypto.a
+    }
+}
 qtHaveModule(serialport) {
     QT += serialport
     DEFINES += TETHER_QTSERIAL

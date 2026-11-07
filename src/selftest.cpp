@@ -16,6 +16,10 @@
 
 #include <cstdio>
 
+#ifdef TETHER_LIBSSH
+#include <libssh/libssh.h>
+#endif
+
 // Checks, on the machine it runs on, the parts that differ between systems:
 // the pseudo-terminal, the vault's password store, and answering ssh as its
 // askpass helper. CI runs it on every system Tether is built for.
@@ -135,7 +139,10 @@ int finishSelfTest(QQmlApplicationEngine &engine, const QStringList &arguments) 
 
     // 3. ssh, which Tether runs for hosts.
     const QString ssh = QStandardPaths::findExecutable("ssh");
-    print("info ssh: " + (ssh.isEmpty() ? QString("not found") : ssh));
+#ifdef TETHER_LIBSSH
+    report(true, "built-in ssh", QString("libssh %1").arg(QString::fromLatin1(ssh_version(0))));
+#endif
+    print("info ssh program: " + (ssh.isEmpty() ? QString("not found") : ssh));
     print(failures ? "SELF-TEST FAILED" : "SELF-TEST PASSED");
     qInstallMessageHandler(previousHandler);
     return failures ? 1 : 0;

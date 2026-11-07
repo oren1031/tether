@@ -343,6 +343,11 @@ QVariantMap Backend::launch(const QVariantMap &profile) const {
 
         if (kind == "ssh") {
             program = tool("ssh");
+#ifdef TETHER_LIBSSH
+            // No ssh program, as on Android: Tether connects itself.
+            if (program.isEmpty())
+                return builtInSsh(p, title, profile);
+#endif
             if (program.isEmpty())
 #ifdef Q_OS_WIN
                 return {{"error", tr("ssh isn't installed. Turn on OpenSSH Client in Windows Settings → System → Optional features.")}};
@@ -455,6 +460,25 @@ QVariantMap Backend::launch(const QVariantMap &profile) const {
             {"workingDirectory", QDir::homePath()}, {"logPath", logPath}, {"splittable", splittable},
             {"reconnect", reconnect}, {"profile", profile}};
 }
+
+#ifdef TETHER_LIBSSH
+QVariantMap Backend::builtInSsh(const QVariantMap &p, const QString &title, const QVariantMap &profile) const {
+    if (p["transport"] == "mosh")
+        return {{"error", tr("mosh isn't available here; connect this host with ssh.")}};
+    if (!p["jumpHost"].toString().isEmpty() || !p["forwards"].toList().isEmpty())
+        return {{"error", tr("Jump hosts and port forwarding need the ssh program, which this system doesn't have.")}};
+    const QVariantMap r = resolved(p);
+    QVariantMap ssh{{"host", p["host"]}, {"port", p["port"]}, {"user", r["user"]},
+                    {"identityFile", expandHome(r["identityFile"].toString())},
+                    {"knownHosts", QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/known_hosts"}};
+    if (p["persistent"].toBool())
+        ssh.insert("command", QString("tmux new-session -A -s %1 2>/dev/null || exec \"$SHELL\" -l")
+                                  .arg(tmuxSessionName(p.value("tmuxSession", p["name"]).toString())));
+    const QString logPath = profile.value("log").toBool() ? newLogPath(title) : QString();
+    return {{"ssh", ssh}, {"title", title}, {"logPath", logPath}, {"splittable", true},
+            {"reconnect", profile.value("reconnect", true).toBool()}, {"profile", profile}};
+}
+#endif
 
 QString Backend::newLogPath(const QString &title) const {
     QDir().mkpath(m_logDirectory);

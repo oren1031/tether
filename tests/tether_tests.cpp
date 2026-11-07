@@ -3,6 +3,10 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRandomGenerator>
+#include <QStandardPaths>
+#include <QScopeGuard>
+#include <QProcess>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -492,6 +496,87 @@ private slots:
         QCOMPARE(assistant.route(), assistant.claudeCode().isEmpty() ? QString() : QString("claude-code"));
         assistant.setProvider("nonsense");
         QCOMPARE(assistant.provider(), QString("auto"));
+    }
+
+    void hostsUseBuiltInSshWithoutTheProgram()
+    {
+#ifdef TETHER_LIBSSH
+        QTemporaryDir dir;
+        Backend backend(dir.filePath("tether.json"), dir.filePath("ssh_config"), dir.filePath("logs"));
+        backend.setTool("ssh", "");
+        const QVariantMap launch = backend.launch({{"kind", "ssh"}, {"name", "Pi"}, {"host", "pi.local"},
+                                                   {"user", "me"}, {"port", 2222}, {"persistent", true}});
+        QVERIFY2(!launch.contains("error"), qPrintable(launch.value("error").toString()));
+        const QVariantMap ssh = launch["ssh"].toMap();
+        QCOMPARE(ssh["host"].toString(), QString("pi.local"));
+        QCOMPARE(ssh["port"].toInt(), 2222);
+        QCOMPARE(ssh["user"].toString(), QString("me"));
+        QVERIFY(ssh["command"].toString().startsWith("tmux new-session -A -s tether-pi "));
+        QVERIFY(ssh["knownHosts"].toString().endsWith("/known_hosts"));
+        QVERIFY(launch["reconnect"].toBool());
+        QVERIFY(backend.launch({{"kind", "ssh"}, {"name", "x"}, {"host", "h"}, {"jumpHost", "b"}}).contains("error"));
+#else
+        QSKIP("Built without libssh.");
+#endif
+    }
+
+    void builtInSshLogsInAndRuns()
+    {
+#if defined(TETHER_LIBSSH) && !defined(Q_OS_WIN)
+        const QString sshd = QFileInfo::exists("/usr/bin/sshd") ? "/usr/bin/sshd" : QFileInfo::exists("/usr/sbin/sshd") ? "/usr/sbin/sshd" : QString();
+        const QString keygen = QStandardPaths::findExecutable("ssh-keygen");
+        if (sshd.isEmpty() || keygen.isEmpty())
+            QSKIP("No sshd here to test against.");
+        QTemporaryDir dir;
+        auto run = [](const QString &program, const QStringList &args) {
+            QProcess p;
+            p.start(program, args);
+            return p.waitForFinished(30000) && p.exitCode() == 0;
+        };
+        QVERIFY(run(keygen, {"-q", "-t", "ed25519", "-N", "", "-f", dir.filePath("host")}));
+        QVERIFY(run(keygen, {"-q", "-t", "ed25519", "-N", "pass phrase", "-f", dir.filePath("client")}));
+        QFile::copy(dir.filePath("client.pub"), dir.filePath("authorized_keys"));
+        const int port = 20000 + QRandomGenerator::global()->bounded(20000);
+        write(dir.filePath("sshd_config"), QString(
+            "Port %1\nListenAddress 127.0.0.1\nHostKey %2\nAuthorizedKeysFile %3\nPasswordAuthentication no\n"
+            "KbdInteractiveAuthentication no\nUsePAM no\nStrictModes no\nPidFile %4\n")
+            .arg(port).arg(dir.filePath("host"), dir.filePath("authorized_keys"), dir.filePath("sshd.pid")).toUtf8());
+        QProcess server;
+        server.start(sshd, {"-D", "-f", dir.filePath("sshd_config"), "-E", dir.filePath("sshd.log")});
+        QVERIFY(server.waitForStarted());
+        QTest::qWait(500);
+        auto stopServer = qScopeGuard([&] { server.kill(); server.waitForFinished(); });
+
+        QString user = qEnvironmentVariable("USER");
+        if (user.isEmpty())
+            user = qEnvironmentVariable("LOGNAME");
+        const QVariantMap settings{{"host", "127.0.0.1"}, {"port", port}, {"user", user},
+                                   {"identityFile", dir.filePath("client")}, {"passphrase", "pass phrase"},
+                                   {"knownHosts", dir.filePath("known_hosts")},
+                                   {"command", "echo ssh-ok-$((2+3)); exit 5"}};
+        TerminalView view;
+        view.setSize(QSizeF(900, 400));
+        QSignalSpy finished(&view, &TerminalView::finished);
+        QVERIFY(view.startSsh(settings));
+        // A new host: answer the question in the terminal, as a person would.
+        QTRY_VERIFY_WITH_TIMEOUT(view.screenText(10).contains("continue connecting"), 10000);
+        view.sendText("yes\r");
+        QVERIFY(finished.wait(15000));
+        const QString text = view.screenText(20);
+        QVERIFY2(text.contains("ssh-ok-5"), qPrintable(text));
+        QCOMPARE(finished.first().first().toInt(), 5);
+
+        // Known now: no question the second time.
+        TerminalView again;
+        again.setSize(QSizeF(900, 400));
+        QSignalSpy done(&again, &TerminalView::finished);
+        QVERIFY(again.startSsh(settings));
+        QVERIFY(done.wait(15000));
+        QVERIFY(!again.screenText(20).contains("continue connecting"));
+        QVERIFY2(again.screenText(20).contains("ssh-ok-5"), qPrintable(again.screenText(20)));
+#else
+        QSKIP("Built without libssh.");
+#endif
     }
 
     void snippetPayloadPressesEnter()

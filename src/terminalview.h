@@ -13,6 +13,7 @@
 
 class Pty;
 class QSerialPort;
+class SshSession;
 class QFile;
 
 // A terminal: libvterm keeps the screen, a Pty runs the program, and this
@@ -70,6 +71,9 @@ public:
     // A serial port opened by Tether itself (where there's no picocom):
     // device, baud, dataBits, parity, stopBits, flow, enter, and echo.
     Q_INVOKABLE bool startSerial(const QVariantMap &settings);
+    // An ssh connection Tether makes itself (libssh), where there's no ssh
+    // program: host, port, user, identityFile, password, command, knownHosts.
+    Q_INVOKABLE bool startSsh(const QVariantMap &settings);
     Q_INVOKABLE void terminate();
     // Types text as if pasted from the keyboard, without bracketed paste:
     // snippets use it, and \r presses Enter.
@@ -153,6 +157,8 @@ private:
     VTermScreen *m_screen = nullptr;
     Pty *m_pty = nullptr;
     QSerialPort *m_serial = nullptr;
+    SshSession *m_ssh = nullptr;
+    bool m_sshRunning = false;
     QString m_serialEnter;   // what Enter sends on a serial port: cr, lf, or crlf
     bool m_serialEcho = false;
     QFile *m_log = nullptr;

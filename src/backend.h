@@ -134,6 +134,9 @@ private:
     QString controlPath() const;
     QString newLogPath(const QString &title) const;
     bool sharesConnections() const;
+#ifdef TETHER_LIBSSH
+    QVariantMap builtInSsh(const QVariantMap &profile, const QString &title, const QVariantMap &original) const;
+#endif
     QVariantMap identity(const QString &id) const;
     QVariantMap resolved(const QVariantMap &profile) const;
     QStringList askpassEnvironment(const QVariantMap &profile, bool terminal) const;

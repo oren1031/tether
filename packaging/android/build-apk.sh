@@ -14,8 +14,11 @@ build="$root/build-android-$abi"
 mkdir -p "$build"
 cd "$build"
 "$root/packaging/android/prepare.sh" "$QT_ROOT_DIR" "$build/package" "$root/pkgbuild/tether.svg"
+# libssh for ssh connections, built once per ABI and cached.
+libssh="${LIBSSH_ROOT:-$HOME/.cache/tether-libssh}/$abi"
+"$root/packaging/android/build-libssh.sh" "$abi" "$libssh"
 "$QT_ROOT_DIR/bin/qmake" "$root/tether.pro" ANDROID_ABIS="$abi" ANDROID_PACKAGE_SOURCE_DIR="$build/package" \
-    ANDROID_VERSION_NAME="$version" ANDROID_VERSION_CODE="$code"
+    ANDROID_VERSION_NAME="$version" ANDROID_VERSION_CODE="$code" LIBSSH_DIR="$libssh"
 make -j"$(nproc)"
 make INSTALL_ROOT="$build/android-build" install
 
