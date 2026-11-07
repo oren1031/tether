@@ -1,0 +1,27 @@
+pkgname=tether
+pkgver=0.2.0
+pkgrel=1
+pkgdesc='SSH hosts and serial ports in tabs and split panes'
+arch=('x86_64' 'aarch64')
+license=('MIT')
+depends=('qt6-base' 'qt6-declarative' 'qt6-svg' 'qt6-wayland' 'qmltermwidget' 'openssh' 'picocom' 'util-linux')
+makedepends=('gcc' 'make')
+optdepends=('inter-font: the interface font Tether prefers'
+            'tmux: sessions that keep running through drops and restarts'
+            'mosh: connections that survive sleep and network changes'
+            'libsecret: saving passwords in the vault (with a keyring)')
+source=()
+sha256sums=()
+
+build() {
+  cd "$startdir/.."
+  ./bin/build
+}
+
+package() {
+  cd "$startdir/.."
+  install -Dm755 build/tether "$pkgdir/usr/bin/tether"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$startdir/tether.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/tether.svg"
+  install -Dm644 "$startdir/tether.desktop" "$pkgdir/usr/share/applications/tether.desktop"
+}

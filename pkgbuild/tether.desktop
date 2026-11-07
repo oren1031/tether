@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Tether
+Comment=SSH hosts and serial ports in tabs and split panes
+Exec=tether
+Icon=tether
+Terminal=false
+Categories=Network;RemoteAccess;System;TerminalEmulator;
+Keywords=ssh;serial;com;uart;terminal;tmux;
+StartupWMClass=tether

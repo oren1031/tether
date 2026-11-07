@@ -1,0 +1,57 @@
+# Pushing a tag like v0.3.0 tests Tether, builds the Arch package, and
+# publishes it as a GitHub release, which installed copies offer as an update.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  arch:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install build tools and Qt
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git github-cli \
+            qt6-base qt6-declarative qt6-svg qt6-wayland qmltermwidget openssh picocom
+
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          grep -q "^VERSION = $want\$" tether.pro || { echo "tether.pro VERSION isn't $want"; exit 1; }
+          grep -q "^pkgver=$want\$" pkgbuild/PKGBUILD || { echo "PKGBUILD pkgver isn't $want"; exit 1; }
+
+      - name: Test
+        run: bin/test
+
+      # makepkg won't run as root, and the checkout is fresh, so the app
+      # itself is built here for the first time, with the update source set.
+      - name: Build the package
+        env:
+          TETHER_REPO: ${{ github.repository }}
+        run: |
+          useradd -m builder
+          chown -R builder .
+          su builder -c "cd pkgbuild && TETHER_REPO=$TETHER_REPO makepkg -f --nodeps"
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config --global --add safe.directory "$PWD"
+          files=$(ls pkgbuild/tether-[0-9]*-x86_64.pkg.tar.zst)
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" $files --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" $files --repo "$GITHUB_REPOSITORY" \
+              --title "Tether ${GITHUB_REF_NAME#v}" --generate-notes
+          fi
