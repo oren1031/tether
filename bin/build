@@ -6,6 +6,9 @@ mkdir -p "$ROOT/build"
 cd "$ROOT/build"
 
 qmake6 "$ROOT/tether.pro"
+# The version and update source are compiler defines, which make doesn't
+# track, so main.cpp is always rebuilt to pick up a change to either.
+rm -f main.o
 make -j"$(nproc)"
 
 echo "Built $ROOT/build/tether"
