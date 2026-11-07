@@ -79,6 +79,23 @@ sudo usermod -aG uucp $USER
 
 Tether says which group a device needs when it can't open it.
 
+## Install
+
+On Arch and Omarchy, download the package from the
+[latest release](https://github.com/oren1031/tether/releases/latest) and run:
+
+```sh
+sudo pacman -U tether-*-x86_64.pkg.tar.zst
+```
+
+After that, Tether tells you when a new version is out and installs it for you.
+Or build it yourself:
+
+```sh
+git clone https://github.com/oren1031/tether.git
+cd tether && bin/install
+```
+
 ## Build
 
 Needs Qt 6.5 or newer, qmltermwidget for Qt 6, picocom, openssh, and util-linux.
