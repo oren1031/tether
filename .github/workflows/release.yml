@@ -139,11 +139,17 @@ jobs:
       - name: Self-test
         shell: pwsh
         run: |
-          $p = Start-Process build\bin\tether.exe -ArgumentList '--self-test' -Wait -PassThru -NoNewWindow `
+          $p = Start-Process build\bin\tether.exe -ArgumentList '--self-test','tether-windows.png' -Wait -PassThru -NoNewWindow `
             -RedirectStandardOutput selftest.txt -RedirectStandardError selftest-err.txt
           Get-Content selftest.txt
           Get-Content selftest-err.txt
           exit $p.ExitCode
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-screenshot
+          path: tether-windows.png
 
       - name: Make the installer
         shell: pwsh

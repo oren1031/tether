@@ -4,6 +4,9 @@
 #include "terminalview.h"
 
 #include <QCoreApplication>
+#include <QQmlApplicationEngine>
+#include <QQuickWindow>
+#include <QImage>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QProcess>
@@ -16,15 +19,49 @@
 // Checks, on the machine it runs on, the parts that differ between systems:
 // the pseudo-terminal, the vault's password store, and answering ssh as its
 // askpass helper. CI runs it on every system Tether is built for.
-int runSelfTest() {
-    int failures = 0;
-    auto report = [&](bool ok, const QString &what, const QString &detail = {}) {
-        std::printf("%s %s%s\n", ok ? "ok  " : "FAIL", qPrintable(what),
-                    detail.isEmpty() ? "" : qPrintable("  (" + detail + ")"));
-        std::fflush(stdout);
-        if (!ok)
-            ++failures;
-    };
+namespace {
+int failures = 0;
+QStringList qmlProblems;
+QtMessageHandler previousHandler = nullptr;
+
+void report(bool ok, const QString &what, const QString &detail = {}) {
+    std::printf("%s %s%s\n", ok ? "ok  " : "FAIL", qPrintable(what),
+                detail.isEmpty() ? "" : qPrintable("  (" + detail + ")"));
+    std::fflush(stdout);
+    if (!ok)
+        ++failures;
+}
+
+// Warnings from Tether's own QML files are failures; Qt's own chatter isn't.
+void collect(QtMsgType type, const QMessageLogContext &context, const QString &message) {
+    if (type != QtDebugMsg && type != QtInfoMsg && message.contains("qrc:/"))
+        qmlProblems << message;
+    if (previousHandler)
+        previousHandler(type, context, message);
+}
+} // namespace
+
+void startSelfTest() {
+    previousHandler = qInstallMessageHandler(collect);
+}
+
+int finishSelfTest(QQmlApplicationEngine &engine, const QStringList &arguments) {
+    // The interface: it loads, and nothing in it complains once it's up.
+    report(!engine.rootObjects().isEmpty(), "load the interface");
+    auto *window = engine.rootObjects().isEmpty() ? nullptr : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+    {
+        QElapsedTimer wait;
+        wait.start();
+        while (wait.elapsed() < 2500)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+    }
+    const int shotIndex = int(arguments.indexOf("--self-test")) + 1;
+    const QString shot = shotIndex < arguments.size() ? arguments.at(shotIndex) : QString();
+    if (window && !shot.isEmpty() && shot.endsWith(".png")) {
+        const QImage image = window->grabWindow();
+        report(!image.isNull() && image.save(shot), "save a screenshot", shot);
+    }
+    report(qmlProblems.isEmpty(), "no interface errors", qmlProblems.join(" | ").left(600));
 
     // 1. A program in a terminal: its output, its exit code, and the size it sees.
     {
@@ -89,5 +126,6 @@ int runSelfTest() {
 
     std::printf("%s\n", failures ? "SELF-TEST FAILED" : "SELF-TEST PASSED");
     std::fflush(stdout);
+    qInstallMessageHandler(previousHandler);
     return failures ? 1 : 0;
 }

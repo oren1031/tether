@@ -36,8 +36,11 @@ int main(int argc, char *argv[]) {
         return Credentials::askpass(argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString());
 
     QGuiApplication app(argc, argv);
-    if (app.arguments().contains("--self-test"))
-        return runSelfTest();
+    // tether --self-test [screenshot.png]: checks this system, loads the
+    // whole interface, and reports; nothing is saved.
+    const bool selfTest = app.arguments().contains("--self-test");
+    if (selfTest)
+        startSelfTest();
     app.setApplicationName("tether");
     app.setApplicationVersion(APP_VERSION);
 
@@ -76,6 +79,8 @@ int main(int argc, char *argv[]) {
                      [&] { assistant.setProvider(backend.settings().value("aiProvider").toString()); });
     engine.rootContext()->setContextProperty("updater", &updater);
     engine.load(QUrl("qrc:/Main.qml"));
+    if (selfTest)
+        return finishSelfTest(engine, app.arguments());
     if (engine.rootObjects().isEmpty())
         return 1;
 
