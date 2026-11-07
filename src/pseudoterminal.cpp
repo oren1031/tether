@@ -91,6 +91,13 @@ bool Pty::start(const QString &program, const QStringList &args, const QString &
     QByteArray attributes(int(attributeSize), 0);
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = sizeof(STARTUPINFOEXW);
+    // Without this, a Tether whose own output is redirected (started from a
+    // script, say) passes those handles on, and the program writes there
+    // instead of to the terminal.
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = nullptr;
+    startup.StartupInfo.hStdOutput = nullptr;
+    startup.StartupInfo.hStdError = nullptr;
     startup.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes.data());
     InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &attributeSize);
     UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, console,
