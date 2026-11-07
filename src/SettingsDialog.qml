@@ -899,10 +899,45 @@ TSheet {
                     font.family: Style.fontFamily
                     font.pixelSize: Style.fontSize
                     color: Style.secondaryLabel
-                    text: qsTr("Press Ctrl+Shift+A in a session and describe what you want; Claude answers with a command to insert or run. It uses your own Anthropic API key, billed to your account, and only your request and the kind of session are sent.")
+                    text: qsTr("Press Ctrl+Shift+A in a session and describe what you want; Claude answers with a command to insert or run. Only your request and the kind of session are sent, never the terminal's contents.")
                 }
 
                 Group {
+                    title: qsTr("Connect with")
+                    Row_ {
+                        label: qsTr("Account")
+                        note: assistant.route === "claude-code" ? qsTr("Using your Claude subscription through Claude Code.")
+                            : assistant.route === "api" ? qsTr("Using your Anthropic API key, billed per request.")
+                            : qsTr("Not connected yet; set up one of the options below.")
+                        last: true
+                        TSegmented {
+                            model: [{ value: "auto", text: qsTr("Automatic") },
+                                    { value: "claude-code", text: qsTr("Subscription") },
+                                    { value: "api", text: qsTr("API key") }]
+                            value: backend.settings.aiProvider
+                            onActivated: v => dialog.set("aiProvider", v)
+                        }
+                    }
+                }
+
+                Group {
+                    title: qsTr("Claude subscription (Pro or Max)")
+                    footnote: qsTr("Tether asks your own Claude Code, which signs in with your Claude account, so answers count toward your plan's usage instead of an API bill.")
+                    Row_ {
+                        label: assistant.claudeCode ? qsTr("Claude Code found") : qsTr("Claude Code isn't installed")
+                        note: assistant.claudeCode ? assistant.claudeCode + "  ·  " + qsTr("If it isn't signed in yet, run claude in a terminal and log in.")
+                                                   : qsTr("Install it from claude.com/code, run claude once, and log in with your Claude account.")
+                        last: true
+                        TButton {
+                            visible: !assistant.claudeCode
+                            text: qsTr("Get Claude Code")
+                            onClicked: Qt.openUrlExternally("https://claude.com/code")
+                        }
+                    }
+                }
+
+                Group {
+                    title: qsTr("Anthropic API key")
                     Row_ {
                         label: qsTr("API key")
                         note: assistant.keySource === "environment" ? qsTr("Using ANTHROPIC_API_KEY from the environment.")

@@ -1,6 +1,6 @@
 #include "serialports.h"
 
-#include <QCollator>
+#include <QRegularExpression>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -42,9 +42,15 @@ void SerialPorts::refresh() {
 
     const QDir dir(m_directory);
     QStringList names = dir.entryList({"ttyUSB*", "ttyACM*", "rfcomm*"}, QDir::Files | QDir::System);
-    QCollator collator;
-    collator.setNumericMode(true);
-    std::sort(names.begin(), names.end(), collator);
+    // ttyUSB2 before ttyUSB10: by the name, then the number at its end. Done
+    // by hand because QCollator's numeric mode depends on the system locale.
+    static const QRegularExpression trailing("^(.*?)(\\d*)$");
+    std::sort(names.begin(), names.end(), [](const QString &a, const QString &b) {
+        const auto x = trailing.match(a), y = trailing.match(b);
+        if (x.captured(1) != y.captured(1))
+            return x.captured(1) < y.captured(1);
+        return x.captured(2).toLongLong() < y.captured(2).toLongLong();
+    });
 
     QVariantList devices;
     for (const QString &name : names) {

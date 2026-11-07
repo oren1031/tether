@@ -10,11 +10,57 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <QTimer>
 
 Assistant::Assistant(const QString &keyFile, QObject *parent)
     : QObject(parent),
       m_keyFile(!keyFile.isEmpty() ? keyFile
-                : QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/tether/anthropic-key") {}
+                : QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/tether/anthropic-key"),
+      m_claudeCode(findClaudeCode()) {
+    connect(&m_process, &QProcess::finished, this, [this](int code, QProcess::ExitStatus status) {
+        const QByteArray out = m_process.readAllStandardOutput(), err = m_process.readAllStandardError();
+        emit busyChanged();
+        if (status != QProcess::NormalExit)
+            return; // cancelled
+        const QVariantMap result = parseClaudeCode(code, out, err);
+        if (result.contains("error"))
+            emit failed(result.value("error").toString());
+        else
+            emit answered(result["command"].toString(), result["explanation"].toString(), result["risky"].toBool());
+    });
+    connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError e) {
+        if (e == QProcess::FailedToStart) {
+            emit busyChanged();
+            emit failed(tr("Claude Code couldn't start."));
+        }
+    });
+    // Claude Code can take a while to start; give up after two minutes.
+    connect(&m_process, &QProcess::started, this, [this] {
+        QTimer::singleShot(120000, &m_process, [this] {
+            if (m_process.state() != QProcess::NotRunning) {
+                m_process.kill();
+                emit failed(tr("Claude Code took too long to answer."));
+            }
+        });
+    });
+}
+
+void Assistant::setProvider(const QString &provider) {
+    const QString p = provider == "api" || provider == "claude-code" ? provider : QString("auto");
+    if (p == m_provider)
+        return;
+    m_provider = p;
+    emit providerChanged();
+}
+
+QString Assistant::route() const {
+    const bool api = !key().isEmpty(), code = !m_claudeCode.isEmpty();
+    if (m_provider == "api")
+        return api ? "api" : QString();
+    if (m_provider == "claude-code")
+        return code ? "claude-code" : QString();
+    return api ? "api" : code ? "claude-code" : QString();
+}
 
 QString Assistant::key() const {
     const QString env = qEnvironmentVariable("ANTHROPIC_API_KEY").trimmed();
@@ -35,6 +81,7 @@ QString Assistant::saveKey(const QString &input) {
     if (value.isEmpty()) {
         QFile::remove(m_keyFile);
         emit keyChanged();
+        emit providerChanged();
         return {};
     }
     if (value.contains(QRegularExpression("\\s")))
@@ -48,18 +95,20 @@ QString Assistant::saveKey(const QString &input) {
     if (!file.commit())
         return tr("Couldn't save the key: %1").arg(file.errorString());
     emit keyChanged();
+    emit providerChanged();
     return {};
 }
 
-QByteArray Assistant::requestBody(const QString &request, const QVariantMap &context) {
-    const QString system =
-        "You turn a request into one shell command for the terminal session described in the user's message. "
-        "Prefer common, portable tools; use the platform hints in the context when they are given. "
-        "When the request can't be done in one command, chain steps with && or a short pipeline. "
-        "Never invent hostnames, paths, or values the user didn't give; use an obvious placeholder like <file> "
-        "instead. Set risky to true when the command deletes or overwrites data, changes system configuration, "
-        "restarts services, or needs root. The explanation is one or two plain sentences.";
+QString Assistant::systemPrompt() {
+    return "You turn a request into one shell command for the terminal session described in the user's message. "
+           "Prefer common, portable tools; use the platform hints in the context when they are given. "
+           "When the request can't be done in one command, chain steps with && or a short pipeline. "
+           "Never invent hostnames, paths, or values the user didn't give; use an obvious placeholder like <file> "
+           "instead. Set risky to true when the command deletes or overwrites data, changes system configuration, "
+           "restarts services, or needs root. The explanation is one or two plain sentences.";
+}
 
+QString Assistant::userMessage(const QString &request, const QVariantMap &context) {
     QString message = "Request: " + request.trimmed() + "\n\nSession: ";
     const QString kind = context.value("kind").toString();
     if (kind == "ssh")
@@ -73,23 +122,92 @@ QByteArray Assistant::requestBody(const QString &request, const QVariantMap &con
     const QString screen = context.value("screen").toString().right(3000).trimmed();
     if (!screen.isEmpty())
         message += "\n\nRecent terminal output:\n<terminal>\n" + screen + "\n</terminal>";
+    return message;
+}
 
-    const QJsonObject schema{
+QJsonObject Assistant::answerSchema() {
+    return QJsonObject{
         {"type", "object"},
         {"properties", QJsonObject{{"command", QJsonObject{{"type", "string"}}},
                                    {"explanation", QJsonObject{{"type", "string"}}},
                                    {"risky", QJsonObject{{"type", "boolean"}}}}},
         {"required", QJsonArray{"command", "explanation", "risky"}},
         {"additionalProperties", false}};
+}
+
+QByteArray Assistant::requestBody(const QString &request, const QVariantMap &context) {
     const QJsonObject body{
         {"model", Model},
         {"max_tokens", 16000},
-        {"system", system},
+        {"system", systemPrompt()},
         {"fallbacks", "default"},
         {"output_config", QJsonObject{{"effort", "low"},
-                                      {"format", QJsonObject{{"type", "json_schema"}, {"schema", schema}}}}},
-        {"messages", QJsonArray{QJsonObject{{"role", "user"}, {"content", message}}}}};
+                                      {"format", QJsonObject{{"type", "json_schema"}, {"schema", answerSchema()}}}}},
+        {"messages", QJsonArray{QJsonObject{{"role", "user"}, {"content", userMessage(request, context)}}}}};
     return QJsonDocument(body).toJson(QJsonDocument::Compact);
+}
+
+// ── Claude Code ────────────────────────────────────────────────────────────
+
+QString Assistant::findClaudeCode() {
+    const QString found = QStandardPaths::findExecutable("claude");
+    if (!found.isEmpty())
+        return found;
+    // Apps started from a launcher may not have the shell's PATH, so look
+    // where Claude Code's installers put it.
+    const QString home = QDir::homePath();
+    for (const QString &path : {home + "/.local/bin/claude", home + "/.claude/local/claude",
+                                home + "/.local/share/mise/command-wrappers/bin/claude",
+                                home + "/.local/share/mise/shims/claude", QString("/usr/local/bin/claude"),
+                                QString("/usr/bin/claude"), QString("/opt/homebrew/bin/claude")})
+        if (QFileInfo(path).isExecutable())
+            return path;
+    return {};
+}
+
+QStringList Assistant::claudeCodeArguments(const QString &request, const QVariantMap &context) {
+    // One turn, no tools, no MCP servers, nothing saved: just the answer.
+    return {"-p", userMessage(request, context),
+            "--output-format", "json",
+            "--json-schema", QString::fromUtf8(QJsonDocument(answerSchema()).toJson(QJsonDocument::Compact)),
+            "--system-prompt", systemPrompt(),
+            "--tools", "",
+            "--strict-mcp-config",
+            "--no-session-persistence",
+            "--effort", "low"};
+}
+
+QVariantMap Assistant::parseClaudeCode(int exitCode, const QByteArray &stdoutData, const QByteArray &stderrData) {
+    const QJsonObject root = QJsonDocument::fromJson(stdoutData).object();
+    if (root.isEmpty()) {
+        QString why = QString::fromUtf8(stderrData).trimmed().section('\n', -1);
+        if (why.isEmpty())
+            why = tr("Claude Code stopped with code %1.").arg(exitCode);
+        if (why.contains("login", Qt::CaseInsensitive) || why.contains("auth", Qt::CaseInsensitive))
+            why = tr("Claude Code isn't signed in. Run claude in a terminal and log in with your Claude account.");
+        return {{"error", why}};
+    }
+    if (root.value("is_error").toBool() || root.value("subtype").toString() != "success") {
+        const QString result = root.value("result").toString().trimmed();
+        return {{"error", result.isEmpty() ? tr("Claude Code couldn't answer.") : result}};
+    }
+    QJsonObject answer = root.value("structured_output").toObject();
+    if (answer.isEmpty())
+        answer = QJsonDocument::fromJson(root.value("result").toString().toUtf8()).object();
+    const QString command = answer.value("command").toString().trimmed();
+    if (command.isEmpty())
+        return {{"error", tr("No command came back.")}};
+    return {{"command", command}, {"explanation", answer.value("explanation").toString()},
+            {"risky", answer.value("risky").toBool()}};
+}
+
+void Assistant::askClaudeCode(const QString &request, const QVariantMap &context) {
+    if (m_process.state() != QProcess::NotRunning)
+        return;
+    m_process.setWorkingDirectory(QDir::tempPath());
+    m_process.start(m_claudeCode, claudeCodeArguments(request, context));
+    m_process.closeWriteChannel();
+    emit busyChanged();
 }
 
 QVariantMap Assistant::parseResponse(int status, const QByteArray &body) {
@@ -122,12 +240,19 @@ QVariantMap Assistant::parseResponse(int status, const QByteArray &body) {
 void Assistant::ask(const QString &request, const QVariantMap &context) {
     if (request.trimmed().isEmpty())
         return;
-    const QString apiKey = key();
-    if (apiKey.isEmpty()) {
-        emit failed(tr("Add an Anthropic API key in Settings → AI, or set ANTHROPIC_API_KEY."));
+    cancel();
+    const QString how = route();
+    if (how == "claude-code") {
+        askClaudeCode(request, context);
         return;
     }
-    cancel();
+    const QString apiKey = key();
+    if (how.isEmpty() || apiKey.isEmpty()) {
+        emit failed(m_provider == "claude-code"
+                        ? tr("Claude Code isn't installed. Install it from claude.com/code, then log in with your Claude account.")
+                        : tr("Add an Anthropic API key in Settings → AI, or use your Claude subscription through Claude Code."));
+        return;
+    }
     QNetworkRequest req(QUrl("https://api.anthropic.com/v1/messages"));
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     req.setRawHeader("x-api-key", apiKey.toUtf8());
@@ -161,4 +286,8 @@ void Assistant::ask(const QString &request, const QVariantMap &context) {
 void Assistant::cancel() {
     if (m_reply)
         m_reply->abort();
+    if (m_process.state() != QProcess::NotRunning) {
+        m_process.kill();
+        m_process.waitForFinished(1000);
+    }
 }

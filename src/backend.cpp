@@ -100,7 +100,8 @@ QVariantMap Backend::defaultSettings() {
             {"localTmux", false},         // local shells run inside tmux, so they outlive Tether
             {"shareConnections", true},   // ssh ControlMaster: one login per host for panes and files
             {"syncFolder", ""},
-            {"checkUpdates", true}};
+            {"checkUpdates", true},
+            {"aiProvider", "auto"}};      // auto, api, or claude-code
 }
 
 QVariantMap Backend::settings() const {

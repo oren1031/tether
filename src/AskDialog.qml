@@ -77,18 +77,18 @@ TSheet {
             Layout.fillWidth: true
             iconName: "sparkle"
             placeholderText: qsTr("Find the 10 biggest files under /var, sorted")
-            enabled: assistant.keySource !== ""
+            enabled: assistant.route !== ""
             onAccepted: dialog.ask()
         }
 
         Text {
-            visible: assistant.keySource === ""
+            visible: assistant.route === ""
             Layout.fillWidth: true
             wrapMode: Text.Wrap
             font.family: Style.fontFamily
             font.pixelSize: Style.fontSize
             color: Style.secondaryLabel
-            text: qsTr("Add an Anthropic API key in Settings → AI to use this. Requests go to Anthropic's API; your terminal's contents aren't sent.")
+            text: qsTr("Connect Claude in Settings → AI: use your Claude subscription through Claude Code, or an Anthropic API key. Only your request and the kind of session are sent, never the terminal's contents.")
         }
 
         RowLayout {
@@ -177,6 +177,7 @@ TSheet {
             font.pixelSize: Style.smallFontSize
             color: Style.tertiaryLabel
             text: dialog.command ? qsTr("Enter types it into the terminal; Ctrl+Enter runs it too.")
+                                 : assistant.route === "claude-code" ? qsTr("Uses your Claude subscription through Claude Code.")
                                  : qsTr("Uses %1 through your Anthropic API key.").arg("Claude Opus 5.5")
         }
     }
@@ -191,7 +192,7 @@ TSheet {
             Layout.rightMargin: 20
             kind: "primary"
             text: qsTr("Ask")
-            enabled: !assistant.busy && request.text.trim() !== "" && assistant.keySource !== ""
+            enabled: !assistant.busy && request.text.trim() !== "" && assistant.route !== ""
             onClicked: dialog.ask()
         }
         TButton {

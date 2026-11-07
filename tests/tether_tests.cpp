@@ -460,6 +460,32 @@ private slots:
         QVERIFY(!none.configured());
     }
 
+    void assistantCanUseClaudeCodeOnASubscription()
+    {
+        const QStringList args = Assistant::claudeCodeArguments("list ports", {{"kind", "local"}});
+        QCOMPARE(args[0], QString("-p"));
+        QVERIFY(args[1].contains("list ports"));
+        QVERIFY(args.contains("--json-schema"));
+        // No tools: Claude Code only answers, it never runs anything itself.
+        QCOMPARE(args[args.indexOf("--tools") + 1], QString());
+        QVERIFY(args.contains("--no-session-persistence"));
+
+        const QJsonObject ok{{"type", "result"}, {"subtype", "success"}, {"is_error", false},
+                             {"structured_output", QJsonObject{{"command", "ss -tlnp"}, {"explanation", "Lists."},
+                                                               {"risky", false}}}};
+        QCOMPARE(Assistant::parseClaudeCode(0, QJsonDocument(ok).toJson(), {})["command"].toString(), QString("ss -tlnp"));
+        const QJsonObject bad{{"type", "result"}, {"subtype", "success"}, {"is_error", true}, {"result", "Not logged in"}};
+        QCOMPARE(Assistant::parseClaudeCode(1, QJsonDocument(bad).toJson(), {})["error"].toString(), QString("Not logged in"));
+        QVERIFY(Assistant::parseClaudeCode(1, "", "Please run /login").value("error").toString().contains("signed in"));
+
+        QTemporaryDir dir;
+        Assistant assistant(dir.filePath("key"));
+        assistant.setProvider("claude-code");
+        QCOMPARE(assistant.route(), assistant.claudeCode().isEmpty() ? QString() : QString("claude-code"));
+        assistant.setProvider("nonsense");
+        QCOMPARE(assistant.provider(), QString("auto"));
+    }
+
     void snippetPayloadPressesEnter()
     {
         QCOMPARE(Backend::snippetPayload({{"text", "cd /tmp\r\nls"}, {"run", true}}), QString("cd /tmp\rls\r"));

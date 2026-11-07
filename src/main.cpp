@@ -85,6 +85,9 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("backend", &backend);
     engine.rootContext()->setContextProperty("serialPorts", &serialPorts);
     engine.rootContext()->setContextProperty("assistant", &assistant);
+    assistant.setProvider(backend.settings().value("aiProvider").toString());
+    QObject::connect(&backend, &Backend::settingsChanged, &assistant,
+                     [&] { assistant.setProvider(backend.settings().value("aiProvider").toString()); });
     engine.rootContext()->setContextProperty("updater", &updater);
     engine.load(QUrl("qrc:/Main.qml"));
     if (engine.rootObjects().isEmpty())
