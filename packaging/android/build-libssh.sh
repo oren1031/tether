@@ -1,6 +1,6 @@
 #!/bin/sh
-# Builds libssh for Android, with OpenSSL from KDAB's android_openssl (the
-# builds Qt recommends), both as static libraries so nothing extra ships in
+# Builds libssh for Android as a static library, with OpenSSL from KDAB's
+# android_openssl (the builds Qt recommends), whose libcrypto_3.so ships in
 # the APK:  build-libssh.sh <abi> <install dir>
 # Needs ANDROID_NDK_ROOT, cmake, and ninja.
 set -eu
@@ -9,7 +9,7 @@ libssh_version=0.12.2
 libssh_sha256=49560f677d96e3706a904ac2de1116e25f3680937d51e5c92198fcba4a1c1e9f
 openssl_commit=b71f1470962019bd89534a2919f5925f93bc5779
 
-if [ -f "$out/lib/libssh.a" ] && [ -f "$out/lib/libcrypto.a" ]; then
+if [ -f "$out/lib/libssh.a" ] && [ -f "$out/lib/libcrypto_3.so" ]; then
     echo "libssh for $abi is already in $out"
     exit 0
 fi
@@ -37,9 +37,8 @@ cmake -S "libssh-$libssh_version" -B build -G Ninja \
     -DBUILD_SHARED_LIBS=OFF -DWITH_EXAMPLES=OFF -DUNIT_TESTING=OFF -DCLIENT_TESTING=OFF \
     -DWITH_GSSAPI=OFF -DWITH_SERVER=OFF -DWITH_ZLIB=OFF -DWITH_PCAP=OFF -DWITH_NACL=OFF \
     -DOPENSSL_ROOT_DIR="$ssl" -DOPENSSL_INCLUDE_DIR="$work/android_openssl/ssl_3/include" \
-    -DOPENSSL_CRYPTO_LIBRARY="$ssl/libcrypto.a" -DOPENSSL_SSL_LIBRARY="$ssl/libssl.a" \
-    -DOPENSSL_USE_STATIC_LIBS=ON
+    -DOPENSSL_CRYPTO_LIBRARY="$ssl/libcrypto_3.so" -DOPENSSL_SSL_LIBRARY="$ssl/libssl_3.so"
 cmake --build build -j"$(nproc)"
 cmake --install build
-cp "$ssl/libcrypto.a" "$out/lib/"
+cp "$ssl/libcrypto_3.so" "$ssl/libssl_3.so" "$out/lib/"
 ls -la "$out/lib"

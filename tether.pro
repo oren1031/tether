@@ -30,10 +30,11 @@ android|tether_libssh {
     isEmpty(LIBSSH_DIR) {
         LIBS += -lssh
     } else {
-        # Static libssh and OpenSSL (packaging/android/build-libssh.sh).
+        # Static libssh with KDAB's OpenSSL (packaging/android/build-libssh.sh).
         INCLUDEPATH += $$LIBSSH_DIR/include
         DEFINES += LIBSSH_STATIC
-        LIBS += $$LIBSSH_DIR/lib/libssh.a $$LIBSSH_DIR/lib/libcrypto.a
+        LIBS += $$LIBSSH_DIR/lib/libssh.a -L$$LIBSSH_DIR/lib -lcrypto_3
+        android: ANDROID_EXTRA_LIBS += $$LIBSSH_DIR/lib/libcrypto_3.so $$LIBSSH_DIR/lib/libssl_3.so
     }
 }
 qtHaveModule(serialport) {
