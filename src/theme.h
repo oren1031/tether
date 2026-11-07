@@ -6,48 +6,45 @@
 #include <QProcess>
 #include <QTimer>
 #include <QVariant>
-#include <functional>
 
 class Theme : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString accent READ accent NOTIFY changed)
     Q_PROPERTY(QString accentForeground READ accentForeground NOTIFY changed)
     Q_PROPERTY(int radius READ radius NOTIFY changed)
-    Q_PROPERTY(QString terminalScheme READ terminalScheme NOTIFY changed)
     Q_PROPERTY(QString terminalBackground READ terminalBackground NOTIFY changed)
+    // Whether an Omarchy theme was found, so its colors can be offered.
+    Q_PROPERTY(bool hasOmarchy READ hasOmarchy NOTIFY changed)
+    // Bumped on every theme change, for bindings that call schemeColors().
+    Q_PROPERTY(int revision READ revision NOTIFY changed)
 
 public:
-    using SchemeLoader = std::function<bool(const QString &path)>;
-
     explicit Theme(const QString &currentDirectory = {}, QObject *parent = nullptr, const QString &hyprctl = {});
     ~Theme() override;
 
     QString accent() const { return m_accent; }
     QString accentForeground() const;
     int radius() const { return m_radius; }
-    QString terminalScheme() const { return m_scheme; }
-    QString terminalBackground() const { return m_background; }
+    QString terminalBackground() const;
+    bool hasOmarchy() const { return !m_colors.isEmpty(); }
+    int revision() const { return m_revision; }
 
-    // Terminal colors come from the theme as a Konsole color scheme written to
-    // schemeDirectory and handed to the terminal widget through loader.
-    void setSchemeLoader(const SchemeLoader &loader, const QString &schemeDirectory);
-
-    // Color schemes the terminal widget ships, by name, and the colors of one
-    // ("omarchy" is the theme's) as background, foreground, and palette: red,
-    // green, yellow, blue, magenta, and cyan, for previews.
+    // Tether's terminal color schemes by name, and the colors of one
+    // ("omarchy" is the current Omarchy theme's, or Tether Dark without
+    // one): background, foreground, cursor, palette (the 16 ANSI colors),
+    // and preview (red, green, yellow, blue, magenta, cyan).
     Q_INVOKABLE QStringList builtinSchemes() const;
     Q_INVOKABLE QVariantMap schemeColors(const QString &name) const;
-    void setBuiltinSchemeDirectory(const QString &directory) { m_builtinDirectory = directory; }
+    // The 16 ANSI colors from an Omarchy colors.toml, mapped as Omarchy's
+    // Alacritty template does: black is the background, white the
+    // foreground, bright black the muted color.
+    static QVariantMap omarchyColors(const QHash<QString, QString> &colors);
 
     // Installed font families, or only those with fixed-width letters.
     Q_INVOKABLE static QStringList fontFamilies(bool monospace);
 
     static QString readAccent(const QString &path);
     static QHash<QString, QString> readColors(const QString &path);
-    static QString schemeText(const QHash<QString, QString> &colors);
-
-    // A scheme the terminal widget ships, used when the theme's can't be loaded.
-    static constexpr const char *FallbackScheme = "Linux";
 
 signals:
     void changed();
@@ -55,16 +52,11 @@ signals:
 private:
     void reload();
     void refreshRounding();
-    void reloadScheme(const QHash<QString, QString> &colors);
 
     QString m_directory;
     QString m_accent = "#FFD60A";
-    QString m_scheme = FallbackScheme;
-    QString m_background = "#121212";
-    QString m_schemeDirectory;
-    QString m_builtinDirectory;
     QHash<QString, QString> m_colors;
-    SchemeLoader m_schemeLoader;
+    int m_revision = 0;
     QFileSystemWatcher m_watcher;
     QTimer m_debounce;
     QString m_hyprctl;

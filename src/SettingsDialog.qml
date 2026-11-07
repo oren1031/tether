@@ -489,7 +489,7 @@ TSheet {
                     Layout.fillWidth: true
                     implicitHeight: preview.implicitHeight + 28
                     radius: 10
-                    readonly property var colors: { theme.terminalScheme; return theme.schemeColors(backend.settings.terminalScheme) }
+                    readonly property var colors: { theme.revision; return Style.terminalColors }
                     color: Style.terminalBackground
                     border.color: Qt.rgba(1, 1, 1, 0.1)
                     Column {
@@ -501,7 +501,7 @@ TSheet {
                         spacing: backend.settings.lineSpacing
                         readonly property var c: parent.colors
                         readonly property color fg: c.foreground || "#e6e6e6"
-                        readonly property var pal: c.palette || []
+                        readonly property var pal: c.preview || []
                         Text {
                             textFormat: Text.RichText
                             font.family: Style.terminalFamily
@@ -540,12 +540,13 @@ TSheet {
                             anchors.verticalCenter: parent.verticalCenter
                             spacing: 12
                             Repeater {
-                                model: ["omarchy"].concat(theme.builtinSchemes())
+                                model: (theme.hasOmarchy ? ["omarchy"] : []).concat(theme.builtinSchemes())
                                 delegate: Column {
                                     id: card
                                     required property string modelData
                                     readonly property bool chosen: backend.settings.terminalScheme === modelData
-                                    readonly property var colors: { theme.terminalScheme; return theme.schemeColors(modelData) }
+                                        || (!theme.hasOmarchy && backend.settings.terminalScheme === "omarchy" && modelData === "Tether Dark")
+                                    readonly property var colors: { theme.revision; return theme.schemeColors(modelData) }
                                     spacing: 5
                                     width: 112
                                     Rectangle {
@@ -569,7 +570,7 @@ TSheet {
                                             anchors.bottomMargin: 9
                                             spacing: 4
                                             Repeater {
-                                                model: card.colors.palette || []
+                                                model: card.colors.preview || []
                                                 delegate: Rectangle {
                                                     required property var modelData
                                                     width: 10

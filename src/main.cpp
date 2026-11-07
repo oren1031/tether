@@ -4,7 +4,6 @@
 #include <QFile>
 #include <QGuiApplication>
 #include <QIcon>
-#include <QLibraryInfo>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QtQml/qqml.h>
@@ -12,12 +11,13 @@
 #include <QStandardPaths>
 #include <QUrl>
 
-#include <dlfcn.h>
 
 #include "assistant.h"
 #include "backend.h"
 #include "sftp.h"
+#include "terminalview.h"
 #include "updater.h"
+#include "credentials.h"
 
 #ifndef APP_VERSION
 #define APP_VERSION "0.0.0"
@@ -29,26 +29,11 @@
 #include "theme.h"
 #include "translator.h"
 
-// The terminal widget only looks for color schemes in its own directory, but
-// its ColorSchemeManager can load one from any path. That isn't part of the
-// QML API, so resolve it from the plugin the QML engine loads anyway; dlopen
-// hands both of us the same library, and so the same manager.
-static Theme::SchemeLoader terminalSchemeLoader() {
-    const QString plugin = QLibraryInfo::path(QLibraryInfo::QmlImportsPath) + "/QMLTermWidget/libqmltermwidget.so";
-    void *library = dlopen(QFile::encodeName(plugin).constData(), RTLD_NOW | RTLD_GLOBAL);
-    if (!library)
-        return {};
-    using Instance = void *(*)();
-    using Load = bool (*)(void *, const QString &);
-    const auto instance = reinterpret_cast<Instance>(dlsym(library, "_ZN7Konsole18ColorSchemeManager8instanceEv"));
-    const auto load = reinterpret_cast<Load>(
-        dlsym(library, "_ZN7Konsole18ColorSchemeManager21loadCustomColorSchemeERK7QString"));
-    if (!instance || !load)
-        return {};
-    return [instance, load](const QString &path) { return load(instance(), path); };
-}
-
 int main(int argc, char *argv[]) {
+    // ssh runs tether.exe as its askpass helper on Windows: answer and exit.
+    if (qEnvironmentVariable("TETHER_ASKPASS") == "1")
+        return WinCred::askpass(argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString());
+
     QGuiApplication app(argc, argv);
     app.setApplicationName("tether");
     app.setApplicationVersion(APP_VERSION);
@@ -63,6 +48,7 @@ int main(int argc, char *argv[]) {
     QQuickStyle::setStyle("Basic");
     qmlRegisterSingletonType(QUrl("qrc:/Style.qml"), "Tether", 1, 0, "Style");
     qmlRegisterType<SftpBrowser>("Tether", 1, 0, "SftpBrowser");
+    qmlRegisterType<TerminalView>("Tether", 1, 0, "TerminalView");
 
     // Installed before anything is translated, and every qsTr() binding is
     // re-evaluated when the Omarchy language changes.
@@ -70,9 +56,6 @@ int main(int argc, char *argv[]) {
     app.installTranslator(&translator);
 
     Theme theme;
-    if (const auto loader = terminalSchemeLoader())
-        theme.setSchemeLoader(loader, QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation)
-                                          + "/tether/color-schemes");
     Backend backend;
     SerialPorts serialPorts;
     Assistant assistant;

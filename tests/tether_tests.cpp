@@ -10,6 +10,7 @@
 #include "assistant.h"
 #include "backend.h"
 #include "sftp.h"
+#include "terminalview.h"
 #include "updater.h"
 #include "serialports.h"
 #include "theme.h"
@@ -93,24 +94,32 @@ private slots:
         QVERIFY(backend.launch(p).value("error").toString().contains("picocom"));
     }
 
-    void loggedSessionsRunThroughScript()
+    void loggedSessionsGetALogFile()
     {
         QTemporaryDir dir;
         Backend backend(dir.filePath("tether.json"), dir.filePath("ssh_config"), dir.filePath("logs"));
         backend.setTool("ssh", "/usr/bin/ssh");
-        backend.setTool("script", "/usr/bin/script");
-        backend.setTool("env", "/usr/bin/env");
         backend.setSetting("shareConnections", false);
         const QVariantMap launch = backend.launch({{"kind", "ssh"}, {"name", "My box/1"}, {"host", "box"}, {"reconnect", false},
                                                    {"options", "RemoteCommand=echo 'hi'"}, {"log", true}});
         QVERIFY2(!launch.contains("error"), qPrintable(launch.value("error").toString()));
-        const QStringList args = launch["args"].toStringList();
-        QCOMPARE(launch["program"].toString(), QString("/usr/bin/env"));
-        QCOMPARE(args.mid(0, 6), QStringList({"SHELL=/bin/sh", "/usr/bin/script", "--quiet", "--flush", "--return", "--command"}));
-        QCOMPARE(args[6], QString("/usr/bin/ssh -o 'RemoteCommand=echo '\\''hi'\\''' -- box"));
-        QVERIFY(args[7].startsWith(dir.filePath("logs") + "/My_box_1-"));
-        QCOMPARE(args[7], launch["logPath"].toString());
+        // The terminal writes the log itself, so the command is plain ssh.
+        QCOMPARE(launch["program"].toString(), QString("/usr/bin/ssh"));
+        QCOMPARE(launch["args"].toStringList(), QStringList({"-o", "RemoteCommand=echo 'hi'", "--", "box"}));
+        QVERIFY(launch["logPath"].toString().startsWith(dir.filePath("logs") + "/My_box_1-"));
         QVERIFY(QFileInfo(dir.filePath("logs")).isDir());
+
+        // The terminal appends what it prints to that file.
+        TerminalView view;
+        view.setLogFile(launch["logPath"].toString());
+        QSignalSpy done(&view, &TerminalView::finished);
+#ifndef Q_OS_WIN
+        QVERIFY(view.start("/bin/sh", {"-c", "echo logged-line"}));
+        QVERIFY(done.wait(5000));
+        QFile log(launch["logPath"].toString());
+        QVERIFY(log.open(QIODevice::ReadOnly));
+        QVERIFY(log.readAll().contains("logged-line"));
+#endif
     }
 
     void shellQuoting()
@@ -218,18 +227,16 @@ private slots:
     void builtinSchemeColors()
     {
         QTemporaryDir dir;
-        write(dir.filePath("Night.colorscheme"),
-              "[Background]\nColor=1,2,3\n\n[Foreground]\nColor=250,250,250\n\n[Color1]\nColor=255,0,0\n");
-        write(dir.filePath("notes.txt"), "not a scheme");
         Theme theme(dir.filePath("no-omarchy"));
-        theme.setBuiltinSchemeDirectory(dir.path());
-        QCOMPARE(theme.builtinSchemes(), QStringList({"Night"}));
-        const QVariantMap night = theme.schemeColors("Night");
-        QCOMPARE(night.value("background").toString(), QString("#010203"));
-        QCOMPARE(night.value("foreground").toString(), QString("#fafafa"));
-        QCOMPARE(night.value("palette").toList().first().toString(), QString("#ff0000"));
+        QVERIFY(!theme.hasOmarchy());
+        QVERIFY(theme.builtinSchemes().contains("Solarized Dark"));
+        const QVariantMap solarized = theme.schemeColors("Solarized Dark");
+        QCOMPARE(solarized.value("background").toString(), QString("#002b36"));
+        QCOMPARE(solarized.value("palette").toList().size(), 16);
+        QCOMPARE(solarized.value("preview").toList().first().toString(), QString("#dc322f"));
         QVERIFY(theme.schemeColors("Missing").isEmpty());
-        QCOMPARE(theme.schemeColors("omarchy").value("palette").toList().size(), 6);
+        // Without Omarchy, "omarchy" is Tether Dark.
+        QCOMPARE(theme.schemeColors("omarchy").value("background"), theme.schemeColors("Tether Dark").value("background"));
     }
 
     void unreadableFileIsKept()
@@ -248,21 +255,19 @@ private slots:
         QTemporaryDir dir;
         Backend backend(dir.filePath("tether.json"), dir.filePath("ssh_config"), dir.filePath("logs"));
         backend.setTool("ssh", "/usr/bin/ssh");
-        backend.setTool("env", "/usr/bin/env");
         const QVariantMap launch = backend.launch({{"kind", "ssh"}, {"name", "Web 01"}, {"host", "web"},
                                                    {"persistent", true}});
         QVERIFY2(!launch.contains("error"), qPrintable(launch.value("error").toString()));
-        QCOMPARE(launch["program"].toString(), QString("/usr/bin/env"));
+        // The pane reconnects when ssh exits with 255; the command is plain ssh.
+        QCOMPARE(launch["program"].toString(), QString("/usr/bin/ssh"));
+        QVERIFY(launch["reconnect"].toBool());
         const QStringList args = launch["args"].toStringList();
-        // env TETHER_LOST=… /bin/sh -c 'loop' tether /usr/bin/ssh -t … -- web 'tmux …'
-        QVERIFY(args[0].startsWith("TETHER_LOST="));
-        QCOMPARE(args.mid(1, 2), QStringList({"/bin/sh", "-c"}));
-        QVERIFY(args[3].contains("255"));
-        QCOMPARE(args.mid(4, 3), QStringList({"tether", "/usr/bin/ssh", "-t"}));
+        QCOMPARE(args.first(), QString("-t"));
         QVERIFY(args.contains("ServerAliveInterval=15"));
         QVERIFY(args.contains("ControlMaster=auto"));
         QCOMPARE(args.mid(args.size() - 3, 2), QStringList({"--", "web"}));
         QVERIFY(args.last().startsWith("tmux new-session -A -s tether-web-01 "));
+        QVERIFY(!backend.launch({{"kind", "ssh"}, {"name", "x"}, {"host", "web"}, {"reconnect", false}})["reconnect"].toBool());
 
         // A split gets its own tmux session.
         const QVariantMap split = backend.launch({{"kind", "ssh"}, {"name", "Web 01"}, {"host", "web"},
@@ -336,12 +341,13 @@ private slots:
         const QVariantMap launch = backend.launch({{"kind", "ssh"}, {"name", "Web"}, {"host", "web"},
                                                    {"identityId", login["id"]}, {"reconnect", false}});
         const QStringList args = launch["args"].toStringList();
-        QCOMPARE(launch["program"].toString(), QString("/usr/bin/env"));
-        QVERIFY(args.contains("SSH_ASKPASS_REQUIRE=force"));
-        QVERIFY(args.contains("TETHER_IDENTITY=" + login["id"].toString()));
+        const QStringList env = launch["environment"].toStringList();
+        QCOMPARE(launch["program"].toString(), QString("/usr/bin/ssh"));
+        QVERIFY(env.contains("SSH_ASKPASS_REQUIRE=force"));
+        QVERIFY(env.contains("TETHER_IDENTITY=" + login["id"].toString()));
         QVERIFY(args.contains("deploy"));
         QVERIFY(args.contains(QDir::homePath() + "/.ssh/deploy"));
-        QVERIFY(!args.join(' ').contains("hunter2"));
+        QVERIFY(!(args + env).join(' ').contains("hunter2"));
 
         QCOMPARE(backend.removeIdentity(login["id"].toString()), QString());
         QVERIFY(backend.identities().isEmpty());
@@ -545,30 +551,71 @@ private slots:
         QDir(dir.path()).mkpath("theme");
         write(dir.filePath("theme/colors.toml"),
               "accent = \"#112233\"\nbackground = \"#000000\"\nforeground = \"#ffffff\"\nred = \"#ff0000\"\n"
-              "bright_red = \"#ff8080\"\nmuted = \"#7a7a7a\"\n");
+              "bright_red = \"#ff8080\"\nmuted = \"#7a7a7a\"\ngreen = \"#00ff00\"\n");
 
         Theme theme(dir.path());
-        QCOMPARE(theme.terminalScheme(), QString(Theme::FallbackScheme));
+        QVERIFY(theme.hasOmarchy());
         QCOMPARE(theme.terminalBackground(), QString("#000000"));
+        const QVariantList palette = theme.schemeColors("omarchy").value("palette").toList();
+        QCOMPARE(palette.size(), 16);
+        QCOMPARE(palette[0].toString(), QString("#000000"));  // black is the background
+        QCOMPARE(palette[1].toString(), QString("#ff0000"));
+        QCOMPARE(palette[9].toString(), QString("#ff8080"));
+        QCOMPARE(palette[8].toString(), QString("#7a7a7a"));  // bright black is muted
+        QCOMPARE(palette[10].toString(), QString("#00ff00")); // missing brights use the normal color
+        QCOMPARE(palette[7].toString(), QString("#ffffff"));
+    }
 
-        QStringList loaded;
-        theme.setSchemeLoader([&](const QString &path) { loaded << path; return true; }, dir.filePath("schemes"));
-        QCOMPARE(loaded.size(), 1);
-        QVERIFY(theme.terminalScheme().startsWith("omarchy-"));
-        QFile scheme(loaded.first());
-        QVERIFY(scheme.open(QIODevice::ReadOnly));
-        const QString text = QString::fromUtf8(scheme.readAll());
-        QVERIFY(text.contains("[Color1]\nColor=255,0,0\n"));
-        QVERIFY(text.contains("[Color1Intense]\nColor=255,128,128\n"));
-        QVERIFY(text.contains("[Color0Intense]\nColor=122,122,122\n"));
-        QVERIFY(text.contains("[Background]\nColor=0,0,0\n"));
-        // Missing bright colors fall back to the normal ones.
-        QVERIFY(Theme::schemeText({{"green", "#00ff00"}}).contains("[Color2Intense]\nColor=0,255,0\n"));
+    void terminalKeepsTheScreenAndHistory()
+    {
+        TerminalView view;
+        view.setSize(QSizeF(800, 400));
+        const int rows = view.rows();
+        QVERIFY(rows > 5);
+        view.feed("hello \x1b[1;31mred\x1b[0m world\r\nsecond line");
+        const int first = view.scrollbackLines();
+        QCOMPARE(view.lineText(first), QString("hello red world"));
+        QCOMPARE(view.lineText(first + 1), QString("second line"));
 
-        // A scheme the widget refuses leaves the built-in one.
-        Theme refused(dir.path());
-        refused.setSchemeLoader([](const QString &) { return false; }, dir.filePath("schemes"));
-        QCOMPARE(refused.terminalScheme(), QString(Theme::FallbackScheme));
+        // Enough lines to scroll pushes the first ones into the history.
+        QByteArray lots;
+        for (int i = 0; i < rows + 10; ++i)
+            lots += "line " + QByteArray::number(i) + "\r\n";
+        view.feed(lots);
+        QVERIFY(view.scrollbackLines() >= 10);
+        QCOMPARE(view.lineText(0), QString("hello red world"));
+        QVERIFY(view.screenText(3).contains(QString("line %1").arg(rows + 9)));
+
+        // Wide characters take two cells and come back whole.
+        view.feed("\x1b[2J\x1b[H日本 ok");
+        QCOMPARE(view.lineText(view.scrollbackLines()), QString("日本 ok"));
+
+        // The title comes from OSC 0.
+        view.feed("\x1b]0;my title\x07");
+        QCOMPARE(view.title(), QString("my title"));
+    }
+
+    void terminalRunsAProgramInAPty()
+    {
+#ifndef Q_OS_WIN
+        TerminalView view;
+        view.setSize(QSizeF(800, 400));
+        QSignalSpy finished(&view, &TerminalView::finished);
+        QVERIFY(view.start("/bin/sh", {"-c", "printf 'cols=%s\\n' \"$(tput cols 2>/dev/null || stty size | cut -d' ' -f2)\"; echo \"term=$TERM\"; exit 3"}));
+        QVERIFY(finished.wait(5000));
+        QCOMPARE(finished.first().first().toInt(), 3);
+        const QString text = view.screenText(10);
+        QVERIFY2(text.contains(QString("cols=%1").arg(view.columns())), qPrintable(text));
+        QVERIFY2(text.contains("term=xterm-256color"), qPrintable(text));
+        QVERIFY(!view.running());
+
+        // Typing reaches the program.
+        QSignalSpy done(&view, &TerminalView::finished);
+        QVERIFY(view.start("/bin/sh", {"-c", "read line; echo \"got:$line\""}));
+        view.sendText("abc\r");
+        QVERIFY(done.wait(5000));
+        QVERIFY2(view.screenText(10).contains("got:abc"), qPrintable(view.screenText(10)));
+#endif
     }
 
     void themeFallsBack()

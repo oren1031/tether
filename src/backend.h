@@ -51,7 +51,11 @@ public:
     QVariantList identities() const { return m_identities; }
     Q_INVOKABLE QString saveIdentity(const QVariantMap &identity, const QString &password, bool clearPassword = false);
     Q_INVOKABLE QString removeIdentity(const QString &id);
+#ifdef Q_OS_WIN
+    bool keyringAvailable() const { return true; } // Windows Credential Manager
+#else
     bool keyringAvailable() const { return !tool("secret-tool").isEmpty(); }
+#endif
     bool moshAvailable() const { return !tool("mosh").isEmpty(); }
     bool tmuxAvailable() const { return !tool("tmux").isEmpty(); }
 
@@ -121,6 +125,8 @@ private:
     QString syncFile() const;
     QString askpass() const;
     QString controlPath() const;
+    QString newLogPath(const QString &title) const;
+    bool sharesConnections() const;
     QVariantMap identity(const QString &id) const;
     QVariantMap resolved(const QVariantMap &profile) const;
     QStringList askpassEnvironment(const QVariantMap &profile, bool terminal) const;

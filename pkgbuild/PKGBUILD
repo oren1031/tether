@@ -4,7 +4,7 @@ pkgrel=1
 pkgdesc='SSH hosts and serial ports in tabs and split panes'
 arch=('x86_64' 'aarch64')
 license=('MIT')
-depends=('qt6-base' 'qt6-declarative' 'qt6-svg' 'qt6-wayland' 'qmltermwidget' 'openssh' 'picocom' 'util-linux')
+depends=('qt6-base' 'qt6-declarative' 'qt6-svg' 'qt6-wayland' 'openssh' 'picocom')
 makedepends=('gcc' 'make')
 optdepends=('inter-font: the interface font Tether prefers'
             'tmux: sessions that keep running through drops and restarts'

@@ -1,7 +1,9 @@
 #include "backend.h"
 
 #include "serialports.h"
+#include "credentials.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -30,7 +32,11 @@ const QRegularExpression optionPattern(R"(^([A-Za-z][A-Za-z0-9]*)\s*(?:=|\s)\s*(
 const QString endpoint = R"((?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9_.*][A-Za-z0-9_.-]*))";
 const QRegularExpression forwardPattern("^(?:" + endpoint + ":)?\\d{1,5}:" + endpoint + ":\\d{1,5}$");
 const QRegularExpression socksPattern("^(?:" + endpoint + ":)?\\d{1,5}$");
+#ifdef Q_OS_WIN
+const QRegularExpression devicePattern(R"(^(COM\d{1,3}|\\\\\.\\COM\d{1,3})$)", QRegularExpression::CaseInsensitiveOption);
+#else
 const QRegularExpression devicePattern(R"(^/dev/[A-Za-z0-9_./:+-]+$)");
+#endif
 
 QString expandHome(const QString &path) {
     if (path == "~")
@@ -293,10 +299,20 @@ QVariantMap Backend::launch(const QVariantMap &profile) const {
     QStringList environment;
     if (kind == "local") {
         program = expandHome(settings().value("shell").toString());
+#ifdef Q_OS_WIN
+        // PowerShell 7 if it's installed, then Windows PowerShell, then cmd.
+        if (program.isEmpty())
+            program = QStandardPaths::findExecutable("pwsh");
+        if (program.isEmpty())
+            program = QStandardPaths::findExecutable("powershell");
+        if (program.isEmpty())
+            program = qEnvironmentVariable("COMSPEC", "cmd.exe");
+#else
         if (program.isEmpty())
             program = qEnvironmentVariable("SHELL");
         if (program.isEmpty() || !QFileInfo(program).isExecutable())
             program = "/bin/sh";
+#endif
         title = tr("Local");
         // Inside tmux, the shell keeps running if Tether closes or crashes,
         // and shows up under Detached sessions to pick up again.
@@ -323,7 +339,11 @@ QVariantMap Backend::launch(const QVariantMap &profile) const {
         if (kind == "ssh") {
             program = tool("ssh");
             if (program.isEmpty())
+#ifdef Q_OS_WIN
+                return {{"error", tr("ssh isn't installed. Turn on OpenSSH Client in Windows Settings → System → Optional features.")}};
+#else
                 return {{"error", tr("ssh isn't installed. Install the openssh package (openssh-client on Debian and Ubuntu).")}};
+#endif
             const QVariantMap r = resolved(p);
             const bool mosh = p["transport"] == "mosh";
             if (mosh && tool("mosh").isEmpty())
@@ -343,13 +363,20 @@ QVariantMap Backend::launch(const QVariantMap &profile) const {
                 const auto match = optionPattern.match(line);
                 args << "-o" << match.captured(1) + "=" + match.captured(2).trimmed();
             }
+#ifdef Q_OS_WIN
+            // tether.exe can answer password prompts but not "trust this new
+            // host?", so a first-seen host key is accepted; a changed one is
+            // still refused.
+            if (!environment.isEmpty())
+                args << "-o" << "StrictHostKeyChecking=accept-new";
+#endif
             // After the user's options, since ssh keeps the first value it
             // reads for each. Keepalives notice a dead link in under a minute.
             if (p["persistent"].toBool() || p["reconnect"].toBool())
                 args << "-o" << "ServerAliveInterval=15" << "-o" << "ServerAliveCountMax=3";
             // One login per host: panes, the file browser, and reconnects
             // reuse it, so a password is typed once.
-            if (settings().value("shareConnections").toBool() && !mosh)
+            if (sharesConnections() && !mosh)
                 args << "-o" << "ControlMaster=auto" << "-o" << "ControlPath=" + controlPath()
                      << "-o" << "ControlPersist=10m";
 
@@ -380,26 +407,20 @@ QVariantMap Backend::launch(const QVariantMap &profile) const {
                     args.insert(0, "-t");
                     args << remote;
                 }
-                // ssh exits with 255 when the connection fails or drops; then
-                // try again every few seconds until Ctrl+C. A shell that ends
-                // normally ends the pane as before.
-                if (p["reconnect"].toBool()) {
-                    args = QStringList{"-c",
-                        "while :; do \"$@\"; s=$?; [ $s -eq 255 ] || exit $s; "
-                        "printf '\\r\\n\\033[33m%s\\033[0m\\r\\n' \"$TETHER_LOST\"; sleep 3; done",
-                        "tether"} + QStringList{program} + args;
-                    environment << "TETHER_LOST=" + tr("Connection lost. Reconnecting in 3 seconds; press Ctrl+C to stop.");
-                    program = "/bin/sh";
-                }
             }
         } else {
-            program = tool("picocom");
-            if (program.isEmpty())
-                return {{"error", tr("picocom isn't installed. Tether uses it to talk to serial ports; install the picocom package.")}};
             const QString device = p["device"].toString();
             const QString problem = SerialPorts::problem(device);
             if (!problem.isEmpty())
                 return {{"error", problem}};
+            program = tool("picocom");
+            // Where there's no picocom, as on Windows and Android, Tether
+            // opens the port itself.
+            if (program.isEmpty() && SerialPorts::builtIn())
+                return {{"serial", p}, {"title", title}, {"splittable", false}, {"profile", profile},
+                        {"logPath", profile.value("log").toBool() ? newLogPath(title) : QString()}};
+            if (program.isEmpty())
+                return {{"error", tr("picocom isn't installed. Tether uses it to talk to serial ports; install the picocom package.")}};
             args << "--baud" << QString::number(p["baud"].toInt())
                  << "--databits" << QString::number(p["dataBits"].toInt())
                  << "--parity" << p["parity"].toString().left(1)
@@ -418,39 +439,36 @@ QVariantMap Backend::launch(const QVariantMap &profile) const {
         }
     }
 
-    QString logPath;
-    if (profile.value("log").toBool() && kind != "local") {
-        const QString script = tool("script"), env = tool("env");
-        if (script.isEmpty() || env.isEmpty())
-            return {{"error", tr("Logging needs the script command from util-linux, which isn't installed.")}};
-        QDir().mkpath(m_logDirectory);
-        QFile::setPermissions(m_logDirectory, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
-        const QString stem = m_logDirectory + "/" + safeFileName(title) + "-"
-                           + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss");
-        logPath = stem + ".log";
-        for (int n = 2; QFile::exists(logPath); ++n)
-            logPath = QString("%1-%2.log").arg(stem).arg(n);
+    // The terminal writes the log itself, so it works the same everywhere.
+    const QString logPath = profile.value("log").toBool() && kind != "local" ? newLogPath(title) : QString();
 
-        // script records everything the session prints. It runs its command
-        // through $SHELL, so pin that to sh, which the quoting below is for.
-        QStringList command{shellQuote(program)};
-        for (const QString &arg : args)
-            command << shellQuote(arg);
-        args = {"SHELL=/bin/sh", script, "--quiet", "--flush", "--return", "--command", command.join(' '), logPath};
-        program = env;
-    }
+    // ssh exits with 255 when the connection fails or drops; the pane then
+    // reconnects on its own if the host asks for that.
+    const bool reconnect = kind == "ssh" && profile.value("reconnect", true).toBool()
+                           && profile.value("transport", "ssh").toString() == "ssh";
+    return {{"program", program}, {"args", args}, {"environment", environment}, {"title", title},
+            {"workingDirectory", QDir::homePath()}, {"logPath", logPath}, {"splittable", splittable},
+            {"reconnect", reconnect}, {"profile", profile}};
+}
 
-    // The terminal widget can't set environment variables, so env does.
-    if (!environment.isEmpty()) {
-        const QString env = tool("env");
-        if (env.isEmpty())
-            return {{"error", tr("The env command from coreutils isn't installed.")}};
-        args = environment + QStringList{program} + args;
-        program = env;
-    }
+QString Backend::newLogPath(const QString &title) const {
+    QDir().mkpath(m_logDirectory);
+    QFile::setPermissions(m_logDirectory, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+    const QString stem = m_logDirectory + "/" + safeFileName(title) + "-"
+                       + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss");
+    QString path = stem + ".log";
+    for (int n = 2; QFile::exists(path); ++n)
+        path = QString("%1-%2.log").arg(stem).arg(n);
+    return path;
+}
 
-    return {{"program", program}, {"args", args}, {"title", title}, {"workingDirectory", QDir::homePath()},
-            {"logPath", logPath}, {"splittable", splittable}, {"profile", profile}};
+// Windows' OpenSSH can't share connections (no ControlMaster there).
+bool Backend::sharesConnections() const {
+#ifdef Q_OS_WIN
+    return false;
+#else
+    return settings().value("shareConnections").toBool();
+#endif
 }
 
 QVariantMap Backend::quickConnect(const QString &text) const {
@@ -535,7 +553,7 @@ void Backend::refreshTmux() {
 
 bool Backend::connectionReady(const QVariantMap &profile) const {
     const QVariantMap p = resolved(clean(profile));
-    if (p["kind"] != "ssh" || p["transport"] == "mosh" || !settings().value("shareConnections").toBool())
+    if (p["kind"] != "ssh" || p["transport"] == "mosh" || !sharesConnections())
         return true;
     QStringList args{"-O", "check", "-o", "ControlPath=" + controlPath(), "-p", QString::number(p["port"].toInt())};
     if (!p["user"].toString().isEmpty())
@@ -569,7 +587,7 @@ QVariantMap Backend::sftpCommand(const QVariantMap &profile) const {
             && match.captured(1).compare("RequestTTY", Qt::CaseInsensitive) != 0)
             args << "-o" << match.captured(1) + "=" + match.captured(2).trimmed();
     }
-    if (settings().value("shareConnections").toBool())
+    if (sharesConnections())
         args << "-o" << "ControlMaster=auto" << "-o" << "ControlPath=" + controlPath() << "-o" << "ControlPersist=10m";
     args << "--" << p["host"].toString();
     return {{"program", sftp}, {"args", args}, {"environment", askpassEnvironment(p, false)},
@@ -618,7 +636,10 @@ QStringList Backend::askpassEnvironment(const QVariantMap &profile, bool termina
     const QString helper = askpass();
     if (helper.isEmpty())
         return {};
-    QStringList env{"SSH_ASKPASS=" + helper, "SSH_ASKPASS_REQUIRE=force"};
+    QStringList env{"SSH_ASKPASS=" + QDir::toNativeSeparators(helper), "SSH_ASKPASS_REQUIRE=force"};
+#ifdef Q_OS_WIN
+    env << "TETHER_ASKPASS=1";
+#endif
     if (password)
         env << "TETHER_IDENTITY=" + login.value("id").toString();
     // The file browser has no terminal to ask in; it fails instead of hanging.
@@ -662,6 +683,10 @@ printf '%s\n' "$answer"
 )sh";
 
 QString Backend::askpass() const {
+#ifdef Q_OS_WIN
+    // tether.exe answers itself when started with TETHER_ASKPASS=1.
+    return QCoreApplication::applicationFilePath();
+#endif
     const QString path = QFileInfo(controlPath()).absolutePath() + "/askpass";
     QFile existing(path);
     if (existing.open(QIODevice::ReadOnly) && existing.readAll() == QByteArray(askpassScript))
@@ -692,6 +717,16 @@ QString Backend::saveIdentity(const QVariantMap &input, const QString &password,
     const QVariantMap before = identity(id);
     login["hasPassword"] = before.value("hasPassword").toBool();
 
+#ifdef Q_OS_WIN
+    if (!password.isEmpty()) {
+        if (const QString error = WinCred::store(id, "Tether: " + login["name"].toString(), password); !error.isEmpty())
+            return error;
+        login["hasPassword"] = true;
+    } else if (clearPassword && login["hasPassword"].toBool()) {
+        WinCred::remove(id);
+        login["hasPassword"] = false;
+    }
+#else
     const QString secretTool = tool("secret-tool");
     if (!password.isEmpty()) {
         if (secretTool.isEmpty())
@@ -708,6 +743,7 @@ QString Backend::saveIdentity(const QVariantMap &input, const QString &password,
             clearSecret(secretTool, id);
         login["hasPassword"] = false;
     }
+#endif
 
     bool replaced = false;
     for (QVariant &existing : m_identities)
@@ -725,8 +761,13 @@ QString Backend::removeIdentity(const QString &id) {
     const QVariantMap login = identity(id);
     if (login.isEmpty())
         return {};
+#ifdef Q_OS_WIN
+    if (login.value("hasPassword").toBool())
+        WinCred::remove(id);
+#else
     if (login.value("hasPassword").toBool() && !tool("secret-tool").isEmpty())
         clearSecret(tool("secret-tool"), id);
+#endif
     for (int i = 0; i < m_identities.size(); ++i)
         if (m_identities[i].toMap().value("id") == id)
             m_identities.removeAt(i--);

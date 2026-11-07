@@ -1,18 +1,31 @@
 #include "serialports.h"
 
-#include <QRegularExpression>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
 #include <QRegularExpression>
 
+#include <algorithm>
+#include <vector>
+
+#ifdef TETHER_QTSERIAL
+#include <QSerialPortInfo>
+#endif
+#ifndef Q_OS_WIN
 #include <grp.h>
 #include <pwd.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <algorithm>
-#include <vector>
+#endif
+
+bool SerialPorts::builtIn() {
+#ifdef TETHER_QTSERIAL
+    return true;
+#else
+    return false;
+#endif
+}
 
 SerialPorts::SerialPorts(const QString &deviceDirectory, int interval, QObject *parent)
     : QObject(parent), m_directory(deviceDirectory) {
@@ -33,6 +46,40 @@ QString SerialPorts::labelFor(const QString &byIdName) {
     return label.trimmed();
 }
 
+#ifdef Q_OS_WIN
+// Windows names ports COM1, COM2, …; Qt knows what each one is.
+void SerialPorts::refresh() {
+    QVariantList devices;
+#ifdef TETHER_QTSERIAL
+    QList<QSerialPortInfo> ports = QSerialPortInfo::availablePorts();
+    std::sort(ports.begin(), ports.end(), [](const QSerialPortInfo &a, const QSerialPortInfo &b) {
+        return a.portName().mid(3).toInt() < b.portName().mid(3).toInt();
+    });
+    for (const QSerialPortInfo &port : ports) {
+        QString label = port.description();
+        if (!port.manufacturer().isEmpty() && !label.contains(port.manufacturer()))
+            label = port.manufacturer() + " " + label;
+        devices << QVariantMap{{"path", port.portName()}, {"stablePath", port.portName()},
+                               {"label", label.trimmed().isEmpty() ? port.portName() : label.trimmed()},
+                               {"accessible", true}, {"problem", QString()}};
+    }
+#endif
+    if (devices != m_devices) {
+        m_devices = devices;
+        emit devicesChanged();
+    }
+}
+
+QString SerialPorts::problem(const QString &path) {
+#ifdef TETHER_QTSERIAL
+    const QString name = path.section('\\', -1).toUpper();
+    for (const QSerialPortInfo &port : QSerialPortInfo::availablePorts())
+        if (port.portName().toUpper() == name)
+            return {};
+#endif
+    return tr("%1 is not connected.").arg(path);
+}
+#else
 void SerialPorts::refresh() {
     // Names under serial/by-id survive replugging and say what the device is.
     QHash<QString, QString> stable;
@@ -109,3 +156,4 @@ QString SerialPorts::problem(const QString &path) {
     return tr("No permission to open %1. Add yourself to the %2 group with “sudo usermod -aG %2 $USER”, then log out and back in.")
         .arg(path, groupName);
 }
+#endif

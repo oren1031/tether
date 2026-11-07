@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import Tether
-import QMLTermWidget
 
 // One terminal session. The terminal sits in a Loader so reconnecting starts
 // a fresh session in the same place in the split layout.
@@ -14,6 +13,9 @@ FocusScope {
     property var page: null
     property var launch: ({})
     property bool ended: false
+    // A dropped ssh connection (exit 255) reconnects on its own, counting down.
+    property int reconnectIn: 0
+    property bool lostConnection: false
     readonly property string title: launch.title || ""
     readonly property bool active: page !== null && page.activePane === pane
     readonly property var terminal: loader.item
@@ -31,11 +33,13 @@ FocusScope {
 
     function send(text) {
         if (loader.item && !ended)
-            loader.item.session.sendText(text)
+            loader.item.sendText(text)
     }
 
     function restart(newLaunch) {
         ended = false
+        lostConnection = false
+        reconnectTimer.stop()
         launch = newLaunch
         loader.active = false
         loader.active = true
@@ -100,44 +104,60 @@ FocusScope {
         anchors.topMargin: 8
         anchors.bottomMargin: 4
 
-        sourceComponent: QMLTermWidget {
+        sourceComponent: TerminalView {
             id: term
             font.family: Style.terminalFamily
             font.pixelSize: backend.fontSize
-            colorScheme: Style.terminalScheme
+            colors: Style.terminalColors
             lineSpacing: backend.settings.lineSpacing
             blinkingCursor: backend.settings.blinkingCursor
-            enableBold: backend.settings.boldText
+            boldText: backend.settings.boldText
 
-            session: QMLTermSession {
-                id: session
-                initialWorkingDirectory: pane.launch.workingDirectory || ""
-                shellProgram: pane.launch.program || ""
-                shellProgramArgs: pane.launch.args || []
-                onFinished: pane.ended = true
+            onFinished: code => {
+                pane.ended = true
+                pane.lostConnection = code === 255 && !!pane.launch.reconnect
+                if (pane.lostConnection) {
+                    pane.reconnectIn = 3
+                    reconnectTimer.start()
+                }
             }
-
             onActiveFocusChanged: if (activeFocus && pane.page) pane.page.activePane = pane
 
-            // Clicking a pane focuses it without taking the click from the
-            // terminal, which still selects text.
-            TapHandler {
-                acceptedButtons: Qt.AllButtons
-                onPressedChanged: if (pressed) term.forceActiveFocus()
+            // A thin scroll bar for the history, shown while there is some.
+            Rectangle {
+                visible: term.scrollbackLines > 0
+                anchors.right: parent.right
+                width: scrollArea.containsMouse || scrollArea.pressed ? 8 : 5
+                radius: width / 2
+                color: Qt.rgba(1, 1, 1, scrollArea.pressed ? 0.45 : 0.28)
+                opacity: term.scrollOffset > 0 || scrollArea.containsMouse || scrollArea.pressed ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: 200 } }
+                readonly property real total: term.scrollbackLines + term.rows
+                height: Math.max(24, term.height * term.rows / total)
+                y: (term.height - height) * (term.scrollbackLines - term.scrollOffset) / Math.max(1, term.scrollbackLines)
             }
-
-            QMLTermScrollbar {
-                terminal: term
-                width: 5
-                Rectangle {
-                    anchors.fill: parent
-                    radius: width / 2
-                    color: Qt.rgba(1, 1, 1, 0.3)
+            MouseArea {
+                id: scrollArea
+                anchors.right: parent.right
+                width: 12
+                height: parent.height
+                hoverEnabled: true
+                visible: term.scrollbackLines > 0
+                function scrollTo(y) {
+                    const fraction = Math.max(0, Math.min(1, y / height))
+                    term.scrollOffset = Math.round(term.scrollbackLines * (1 - fraction))
                 }
+                onPressed: mouse => scrollTo(mouse.y)
+                onPositionChanged: mouse => { if (pressed) scrollTo(mouse.y) }
             }
 
             Component.onCompleted: {
-                session.startShellProgram()
+                logFile = pane.launch.logPath || ""
+                if (pane.launch.serial)
+                    startSerial(pane.launch.serial)
+                else
+                    start(pane.launch.program || "", pane.launch.args || [], pane.launch.workingDirectory || "",
+                          pane.launch.environment || [])
                 pane.beginStartup()
             }
         }
@@ -177,6 +197,7 @@ FocusScope {
         activeFocusOnTab: true
 
         Keys.onReturnPressed: pane.reconnectRequested()
+        Keys.onEscapePressed: reconnectTimer.stop()
         Keys.onEnterPressed: pane.reconnectRequested()
 
         RowLayout {
@@ -191,7 +212,10 @@ FocusScope {
                 font.family: Style.fontFamily
                 font.pixelSize: 12
                 color: Style.secondaryLabel
-                text: qsTr("Session ended. Press Enter to reconnect, or Ctrl+Shift+W to close the pane.")
+                text: pane.lostConnection && reconnectTimer.running
+                      ? qsTr("Connection lost. Reconnecting in %n seconds…", "", pane.reconnectIn)
+                      : pane.lostConnection ? qsTr("Connection lost. Press Enter to reconnect, or Ctrl+Shift+W to close the pane.")
+                      : qsTr("Session ended. Press Enter to reconnect, or Ctrl+Shift+W to close the pane.")
             }
             TButton {
                 kind: "primary"
@@ -202,4 +226,21 @@ FocusScope {
             }
         }
     }
+
+    Timer {
+        id: reconnectTimer
+        interval: 1000
+        repeat: true
+        onTriggered: {
+            if (!pane.ended) {
+                stop()
+                return
+            }
+            if (--pane.reconnectIn <= 0) {
+                stop()
+                pane.reconnectRequested()
+            }
+        }
+    }
+    onReconnectRequested: reconnectTimer.stop()
 }

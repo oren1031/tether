@@ -5,5 +5,7 @@ TEMPLATE = app
 
 INCLUDEPATH += ../src
 
-HEADERS += ../src/updater.h ../src/assistant.h ../src/sftp.h ../src/backend.h ../src/serialports.h ../src/theme.h ../src/translator.h
-SOURCES += tether_tests.cpp ../src/updater.cpp ../src/assistant.cpp ../src/sftp.cpp ../src/backend.cpp ../src/serialports.cpp ../src/theme.cpp ../src/translator.cpp
+include(../third_party/libvterm/libvterm.pri)
+unix:!android:!macx: LIBS += -lutil
+HEADERS += ../src/credentials.h ../src/pseudoterminal.h ../src/terminalview.h ../src/updater.h ../src/assistant.h ../src/sftp.h ../src/backend.h ../src/serialports.h ../src/theme.h ../src/translator.h
+SOURCES += tether_tests.cpp ../src/credentials.cpp ../src/pseudoterminal.cpp ../src/terminalview.cpp ../src/updater.cpp ../src/assistant.cpp ../src/sftp.cpp ../src/backend.cpp ../src/serialports.cpp ../src/theme.cpp ../src/translator.cpp

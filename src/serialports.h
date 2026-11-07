@@ -19,6 +19,9 @@ public:
     // Why the device can't be opened, in words the user can act on; empty
     // when it can.
     static QString problem(const QString &path);
+    // Whether Tether can open serial ports itself (Qt Serial Port), for
+    // systems without picocom.
+    static bool builtIn();
     // "usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0" -> "FTDI FT232R USB UART A50285BI".
     static QString labelFor(const QString &byIdName);
 

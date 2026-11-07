@@ -1,6 +1,7 @@
-# Pushing a tag like v0.3.0 tests Tether, builds the Arch package and the
-# AppImage, and publishes them as a GitHub release, which installed copies
-# offer as an update. Running it by hand builds everything without publishing.
+# Pushing a tag like v0.3.0 tests Tether, builds the Arch package, the
+# AppImage, and the Windows installer, and publishes them as a GitHub release,
+# which installed copies offer as an update. Running it by hand builds
+# everything without publishing.
 name: Release
 
 on:
@@ -19,7 +20,7 @@ jobs:
       - name: Install build tools and Qt
         run: |
           pacman -Syu --noconfirm --needed base-devel git \
-            qt6-base qt6-declarative qt6-svg qt6-wayland qmltermwidget openssh picocom
+            qt6-base qt6-declarative qt6-svg qt6-wayland openssh picocom
 
       - uses: actions/checkout@v4
 
@@ -51,7 +52,8 @@ jobs:
           path: pkgbuild/tether-[0-9]*-x86_64.pkg.tar.zst
 
   # Built on the oldest supported Ubuntu, so the AppImage runs on it and
-  # anything newer, with Qt and the terminal widget inside.
+  # anything newer, with Qt inside. Qt Serial Port lets it open serial ports
+  # itself where picocom isn't installed.
   appimage:
     runs-on: ubuntu-22.04
     steps:
@@ -66,16 +68,8 @@ jobs:
       - uses: jurplel/install-qt-action@v4
         with:
           version: '6.10.*'
+          modules: 'qtserialport'
           cache: true
-
-      - name: Build the terminal widget
-        run: |
-          git clone https://github.com/Swordfish90/qmltermwidget.git "$RUNNER_TEMP/qmltermwidget"
-          cd "$RUNNER_TEMP/qmltermwidget"
-          git checkout ce8e09a
-          qmake
-          make -j"$(nproc)"
-          make install
 
       - name: Test
         env:
@@ -98,16 +92,61 @@ jobs:
           export QML_SOURCES_PATHS="$PWD/src" EXTRA_QT_MODULES="svg" LDAI_OUTPUT="Tether-$version-x86_64.AppImage"
           ./linuxdeploy-x86_64.AppImage --appdir AppDir -e build/tether \
             -d pkgbuild/tether.desktop -i pkgbuild/tether.svg --plugin qt --output appimage
-          # The terminal's color schemes and keyboard layouts sit beside its plugin.
-          ls AppDir/usr/qml/QMLTermWidget
 
       - uses: actions/upload-artifact@v4
         with:
           name: appimage
           path: Tether-*-x86_64.AppImage
 
+  # Windows 10 1809 and later: ConPTY for terminals, the built-in OpenSSH
+  # client for ssh, Qt Serial Port for COM ports, and Credential Manager for
+  # vault passwords. Inno Setup makes a per-user installer.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.10.*'
+          arch: 'win64_msvc2022_64'
+          modules: 'qtserialport'
+          cache: true
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build Tether
+        shell: cmd
+        env:
+          TETHER_REPO: ${{ github.repository }}
+        run: |
+          mkdir build
+          cd build
+          qmake ..\tether.pro CONFIG+=release
+          nmake
+
+      - name: Gather Qt beside it
+        shell: cmd
+        run: windeployqt --release --qmldir src --no-translations --no-system-d3d-compiler --no-opengl-sw build\bin\tether.exe
+
+      - name: Make the installer
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path tether.pro -Pattern '^VERSION = (.+)$').Matches[0].Groups[1].Value
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) { choco install innosetup -y --no-progress }
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DVersion=$version" "/DSource=$PWD\build\bin" packaging\windows\tether.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/Tether-*-setup.exe
+
   publish:
-    needs: [arch, appimage]
+    needs: [arch, appimage, windows]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:

@@ -98,14 +98,11 @@ QtObject {
     readonly property int fast: 120
     readonly property int normal: 200
 
-    // The terminal's color scheme and background, from the Omarchy theme or
-    // one of the schemes the terminal ships.
-    readonly property string terminalScheme: settings.terminalScheme === "omarchy" ? theme.terminalScheme
-                                                                                  : settings.terminalScheme
-    readonly property color terminalBackground: {
-        if (settings.terminalScheme === "omarchy")
-            return theme.terminalBackground
+    // The terminal's colors: the Omarchy theme's, or one of Tether's schemes.
+    readonly property var terminalColors: {
+        theme.revision
         const colors = theme.schemeColors(settings.terminalScheme)
-        return colors.background || theme.terminalBackground
+        return colors.background ? colors : theme.schemeColors("omarchy")
     }
+    readonly property color terminalBackground: terminalColors.background
 }

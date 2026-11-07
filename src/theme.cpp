@@ -2,17 +2,13 @@
 #include "theme.h"
 
 #include <QColor>
-#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
-#include <QLibraryInfo>
-#include <QSettings>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
-#include <QSaveFile>
 #include <QStandardPaths>
 #include <cmath>
 
@@ -107,18 +103,13 @@ void Theme::reload() {
 
     const QString colorsFile = m_directory + "/theme/colors.toml";
     const auto accent = readAccent(colorsFile);
-    const QString scheme = m_scheme, background = m_background;
-    const bool accentChanged = accent != m_accent;
-    m_accent = accent;
-    reloadScheme(readColors(colorsFile));
-    if (accentChanged || scheme != m_scheme || background != m_background)
+    const auto colors = readColors(colorsFile);
+    if (accent != m_accent || colors != m_colors) {
+        m_accent = accent;
+        m_colors = colors;
+        ++m_revision;
         emit changed();
-}
-
-void Theme::setSchemeLoader(const SchemeLoader &loader, const QString &schemeDirectory) {
-    m_schemeLoader = loader;
-    m_schemeDirectory = schemeDirectory;
-    reload();
+    }
 }
 
 // Every key = "value" pair in colors.toml, so the terminal can use the same
@@ -138,9 +129,70 @@ QHash<QString, QString> Theme::readColors(const QString &path) {
     return colors;
 }
 
-// The mapping follows Omarchy's alacritty.toml template: black is the
-// background, white the foreground, bright black the muted color.
-QString Theme::schemeText(const QHash<QString, QString> &colors) {
+namespace {
+
+struct Scheme {
+    const char *name;
+    const char *background;
+    const char *foreground;
+    const char *palette[16];
+};
+
+// Tether's own schemes. The well-known ones use their published colors.
+const Scheme schemes[] = {
+    {"Tether Dark", "#1e1e20", "#e5e5ea",
+     {"#1c1c1e", "#ff453a", "#32d74b", "#ffd60a", "#0a84ff", "#bf5af2", "#64d2ff", "#e5e5ea",
+      "#636366", "#ff6961", "#4ee06a", "#ffe066", "#409cff", "#da8fff", "#70d7ff", "#ffffff"}},
+    {"Tether Light", "#ffffff", "#1d1d1f",
+     {"#1d1d1f", "#d70015", "#248a3d", "#a05a00", "#0040dd", "#8944ab", "#0071a4", "#8e8e93",
+      "#636366", "#ff3b30", "#34c759", "#b25000", "#007aff", "#af52de", "#32ade6", "#d1d1d6"}},
+    {"Solarized Dark", "#002b36", "#839496",
+     {"#073642", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#eee8d5",
+      "#002b36", "#cb4b16", "#586e75", "#657b83", "#839496", "#6c71c4", "#93a1a1", "#fdf6e3"}},
+    {"Solarized Light", "#fdf6e3", "#657b83",
+     {"#073642", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#eee8d5",
+      "#002b36", "#cb4b16", "#586e75", "#657b83", "#839496", "#6c71c4", "#93a1a1", "#fdf6e3"}},
+    {"Gruvbox Dark", "#282828", "#ebdbb2",
+     {"#282828", "#cc241d", "#98971a", "#d79921", "#458588", "#b16286", "#689d6a", "#a89984",
+      "#928374", "#fb4934", "#b8bb26", "#fabd2f", "#83a598", "#d3869b", "#8ec07c", "#ebdbb2"}},
+    {"Nord", "#2e3440", "#d8dee9",
+     {"#3b4252", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#88c0d0", "#e5e9f0",
+      "#4c566a", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#8fbcbb", "#eceff4"}},
+    {"One Dark", "#282c34", "#abb2bf",
+     {"#282c34", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#abb2bf",
+      "#5c6370", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#ffffff"}},
+    {"Tango", "#1e1e1e", "#d3d7cf",
+     {"#2e3436", "#cc0000", "#4e9a06", "#c4a000", "#3465a4", "#75507b", "#06989a", "#d3d7cf",
+      "#555753", "#ef2929", "#8ae234", "#fce94f", "#729fcf", "#ad7fa8", "#34e2e2", "#eeeeec"}},
+    {"Classic", "#000000", "#e5e5e5",
+     {"#000000", "#cd3131", "#0dbc79", "#e5e510", "#2472c8", "#bc3fbc", "#11a8cd", "#e5e5e5",
+      "#666666", "#f14c4c", "#23d18b", "#f5f543", "#3b8eea", "#d670d6", "#29b8db", "#ffffff"}},
+};
+
+QVariantMap schemeMap(const Scheme &scheme) {
+    QVariantList palette;
+    for (const char *c : scheme.palette)
+        palette << QString(c);
+    return {{"background", scheme.background}, {"foreground", scheme.foreground},
+            {"cursor", scheme.foreground}, {"palette", palette}};
+}
+
+QVariantMap withPreview(QVariantMap colors) {
+    const QVariantList palette = colors.value("palette").toList();
+    colors.insert("preview", palette.mid(1, 6));
+    return colors;
+}
+
+} // namespace
+
+QStringList Theme::builtinSchemes() const {
+    QStringList names;
+    for (const Scheme &scheme : schemes)
+        names << scheme.name;
+    return names;
+}
+
+QVariantMap Theme::omarchyColors(const QHash<QString, QString> &colors) {
     static const QHash<QString, QString> defaults{
         {"background", "#121212"}, {"foreground", "#e6e6e6"}, {"bright_foreground", "#ffffff"},
         {"muted", "#7a7a7a"}, {"red", "#e06c75"}, {"green", "#98c379"}, {"yellow", "#e5c07b"},
@@ -152,66 +204,27 @@ QString Theme::schemeText(const QHash<QString, QString> &colors) {
         const QString base = key.startsWith("bright_") ? key.mid(7) : key;
         return colors.value(base, defaults.value(key, defaults.value(base)));
     };
-    auto rgb = [](const QString &hex) {
-        const QColor c(hex);
-        return QString("%1,%2,%3").arg(c.red()).arg(c.green()).arg(c.blue());
-    };
-
-    QString text = "[General]\nDescription=Omarchy\nOpacity=1\n\n";
-    auto section = [&](const QString &name, const QString &hex) {
-        text += QString("[%1]\nColor=%2\n\n").arg(name, rgb(hex));
-    };
-    section("Background", color("background"));
-    section("BackgroundIntense", color("background"));
-    section("Foreground", color("foreground"));
-    section("ForegroundIntense", color("bright_foreground"));
     const QStringList normal{"background", "red", "green", "yellow", "blue", "magenta", "cyan", "foreground"};
     const QStringList bright{"muted", "bright_red", "bright_green", "bright_yellow",
                              "bright_blue", "bright_magenta", "bright_cyan", "bright_foreground"};
-    for (int i = 0; i < 8; ++i) {
-        section(QString("Color%1").arg(i), color(normal[i]));
-        section(QString("Color%1Intense").arg(i), color(bright[i]));
-    }
-    return text;
+    QVariantList palette;
+    for (const QString &key : normal + bright)
+        palette << color(key);
+    return {{"background", color("background")}, {"foreground", color("foreground")},
+            {"cursor", colors.value("cursor", color("foreground"))}, {"palette", palette}};
 }
 
-QStringList Theme::builtinSchemes() const {
-    const QString directory = !m_builtinDirectory.isEmpty() ? m_builtinDirectory
-        : QLibraryInfo::path(QLibraryInfo::QmlImportsPath) + "/QMLTermWidget/color-schemes";
-    QStringList names;
-    for (const QFileInfo &file : QDir(directory).entryInfoList({"*.colorscheme"}, QDir::Files, QDir::Name | QDir::IgnoreCase))
-        names << file.completeBaseName();
-    return names;
+QString Theme::terminalBackground() const {
+    return schemeColors("omarchy").value("background").toString();
 }
 
 QVariantMap Theme::schemeColors(const QString &name) const {
-    static const QStringList roles{"red", "green", "yellow", "blue", "magenta", "cyan"};
-    QVariantMap result;
-    QVariantList palette;
-    if (name == "omarchy") {
-        result = {{"background", m_colors.value("background", m_background)},
-                  {"foreground", m_colors.value("foreground", "#e6e6e6")}};
-        for (const auto &role : roles)
-            palette << m_colors.value(role, "#808080");
-    } else {
-        const QString directory = !m_builtinDirectory.isEmpty() ? m_builtinDirectory
-            : QLibraryInfo::path(QLibraryInfo::QmlImportsPath) + "/QMLTermWidget/color-schemes";
-        const QString path = directory + "/" + name + ".colorscheme";
-        if (!QFileInfo::exists(path))
-            return {};
-        // Konsole schemes are INI files with "Color=r,g,b" in each section,
-        // which QSettings reads as a list.
-        QSettings scheme(path, QSettings::IniFormat);
-        auto color = [&](const QString &section) {
-            const QStringList rgb = scheme.value(section + "/Color").toStringList();
-            return rgb.size() == 3 ? QColor(rgb[0].toInt(), rgb[1].toInt(), rgb[2].toInt()).name() : QString("#000000");
-        };
-        result = {{"background", color("Background")}, {"foreground", color("Foreground")}};
-        for (int i = 1; i <= 6; ++i)
-            palette << color(QString("Color%1").arg(i));
-    }
-    result.insert("palette", palette);
-    return result;
+    if (name == "omarchy")
+        return withPreview(m_colors.isEmpty() ? schemeMap(schemes[0]) : omarchyColors(m_colors));
+    for (const Scheme &scheme : schemes)
+        if (name == scheme.name)
+            return withPreview(schemeMap(scheme));
+    return {};
 }
 
 QStringList Theme::fontFamilies(bool monospace) {
@@ -224,27 +237,3 @@ QStringList Theme::fontFamilies(bool monospace) {
     return families;
 }
 
-void Theme::reloadScheme(const QHash<QString, QString> &colors) {
-    m_colors = colors;
-    m_background = colors.value("background", "#121212");
-    if (!m_schemeLoader) {
-        m_scheme = FallbackScheme;
-        return;
-    }
-
-    // The widget keeps every scheme it has loaded under its file name, so a
-    // changed theme needs a new name; hashing the contents gives one.
-    const QString text = schemeText(colors);
-    const QString name = "omarchy-" + QString::fromLatin1(
-        QCryptographicHash::hash(text.toUtf8(), QCryptographicHash::Sha1).toHex().left(10));
-    const QString path = m_schemeDirectory + "/" + name + ".colorscheme";
-    if (!QFile::exists(path)) {
-        QDir().mkpath(m_schemeDirectory);
-        QSaveFile file(path);
-        if (!file.open(QIODevice::WriteOnly) || file.write(text.toUtf8()) < 0 || !file.commit()) {
-            m_scheme = FallbackScheme;
-            return;
-        }
-    }
-    m_scheme = m_schemeLoader(path) ? name : QString(FallbackScheme);
-}
