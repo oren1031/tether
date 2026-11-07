@@ -98,7 +98,7 @@ Or download a file from the [latest release](https://github.com/oren1031/tether/
 | Arch, Omarchy | `tether-*-x86_64.pkg.tar.zst` | `sudo pacman -U tether-*.pkg.tar.zst` |
 | Ubuntu 22.04+, other Linux | `Tether-*-x86_64.AppImage` | `chmod +x Tether-*.AppImage` and run it (Ubuntu needs `libfuse2t64`, or `libfuse2` on 22.04) |
 | Windows 10 (1809+) and 11 | `Tether-*-setup.exe` | Run it; it installs for your user, no admin needed |
-| Android | coming soon | |
+| Android 9+ (64-bit ARM phones and tablets) | `Tether-*-android-arm64.apk` | Open it on the phone and allow installing from your browser |
 
 Tether uses `ssh`, `picocom`, and optionally `tmux` and `mosh` from the system.
 On Ubuntu: `sudo apt install openssh-client picocom tmux`. Without picocom (as on
@@ -108,6 +108,12 @@ On Windows, Tether uses the OpenSSH client built into Windows (Settings → Syst
 Optional features → OpenSSH Client, on by default in current versions), opens COM
 ports itself, and keeps vault passwords in Windows Credential Manager. Local tabs run
 PowerShell. Connection sharing, local tmux, and mosh are Linux-only.
+
+On Android, Tether has ssh built in (libssh), since Android has none: host keys,
+key files (pick one with Choose… and Tether keeps a private copy), passwords, and
+keeping sessions alive with tmux on the server all work. A row of extra keys (Esc,
+Tab, Ctrl, Alt, arrows) sits above the keyboard. Not yet on Android: jump hosts,
+port forwarding, the file browser, serial ports, and saving passwords in the vault.
 
 To build it yourself:
 

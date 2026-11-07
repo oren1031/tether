@@ -480,6 +480,33 @@ QVariantMap Backend::builtInSsh(const QVariantMap &p, const QString &title, cons
 }
 #endif
 
+QVariantMap Backend::importKey(const QUrl &url) {
+    // On a desktop the key stays where it is; on Android, where apps can't
+    // read other apps' files by path, it's copied into Tether's own storage.
+#ifdef Q_OS_ANDROID
+    QFile source(url.isLocalFile() ? url.toLocalFile() : url.toString());
+    if (!source.open(QIODevice::ReadOnly))
+        return {{"error", tr("Couldn't read that file: %1").arg(source.errorString())}};
+    const QByteArray key = source.readAll();
+    if (!key.contains("PRIVATE KEY"))
+        return {{"error", tr("That doesn't look like a private key.")}};
+    const QString directory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/keys";
+    QDir().mkpath(directory);
+    QString name = QFileInfo(url.path()).fileName();
+    if (name.isEmpty() || name.contains('%') || name.contains(':'))
+        name = "key-" + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss");
+    QSaveFile file(directory + "/" + name);
+    if (!file.open(QIODevice::WriteOnly) || file.write(key) != key.size() || !file.commit())
+        return {{"error", tr("Couldn't save the key: %1").arg(file.errorString())}};
+    QFile::setPermissions(file.fileName(), QFile::ReadOwner | QFile::WriteOwner);
+    return {{"path", file.fileName()}};
+#else
+    const QString path = url.isLocalFile() ? url.toLocalFile() : url.toString();
+    const QString home = QDir::homePath();
+    return {{"path", path.startsWith(home + "/") ? "~" + path.mid(home.size()) : path}};
+#endif
+}
+
 QString Backend::newLogPath(const QString &title) const {
     QDir().mkpath(m_logDirectory);
     QFile::setPermissions(m_logDirectory, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);

@@ -1027,7 +1027,23 @@ TSheet {
             L { text: qsTr("User") }
             TField { id: loginUser; Layout.fillWidth: true; placeholderText: qsTr("deploy"); onAccepted: loginSheet.save() }
             L { text: qsTr("Key file") }
-            TField { id: loginKey; Layout.fillWidth: true; placeholderText: qsTr("~/.ssh/id_ed25519 (optional)"); onAccepted: loginSheet.save() }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                TField { id: loginKey; Layout.fillWidth: true; placeholderText: qsTr("~/.ssh/id_ed25519 (optional)"); onAccepted: loginSheet.save() }
+                TButton { text: qsTr("Choose…"); onClicked: loginKeyPicker.open() }
+            }
+            FileDialog {
+                id: loginKeyPicker
+                title: qsTr("Choose a private key")
+                onAccepted: {
+                    const result = backend.importKey(selectedFile)
+                    if (result.error)
+                        loginSheet.sheetError = result.error
+                    else
+                        loginKey.text = result.path
+                }
+            }
             L { text: qsTr("Password") }
             TField {
                 id: loginPassword

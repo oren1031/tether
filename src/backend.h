@@ -4,6 +4,7 @@
 #include <QHash>
 #include <QObject>
 #include <QProcess>
+#include <QUrl>
 #include <QVariant>
 
 // Saved hosts, serial ports, and snippets, and the command line each session
@@ -53,6 +54,8 @@ public:
     QVariantList identities() const { return m_identities; }
     Q_INVOKABLE QString saveIdentity(const QVariantMap &identity, const QString &password, bool clearPassword = false);
     Q_INVOKABLE QString removeIdentity(const QString &id);
+    // A private key picked in a file dialog, as a path ssh can use: path or error.
+    Q_INVOKABLE QVariantMap importKey(const QUrl &url);
 #ifdef Q_OS_WIN
     bool keyringAvailable() const { return true; } // Windows Credential Manager
 #else

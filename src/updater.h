@@ -24,7 +24,9 @@ class Updater : public QObject {
     Q_PROPERTY(QString message READ message NOTIFY changed)
     Q_PROPERTY(double progress READ progress NOTIFY changed)
     Q_PROPERTY(QString downloadedFile READ downloadedFile NOTIFY changed)
-    Q_PROPERTY(QString installKind READ installKind CONSTANT) // pacman, appimage, windows, page
+    Q_PROPERTY(QString installKind READ installKind CONSTANT) // pacman, appimage, windows, android, page
+    // The new version's file for this system; Android installs it through the browser.
+    Q_PROPERTY(QString downloadUrl READ downloadUrl NOTIFY changed)
 
 public:
     explicit Updater(const QString &repository, const QString &currentVersion, QObject *parent = nullptr);
@@ -39,6 +41,7 @@ public:
     QString message() const { return m_message; }
     double progress() const { return m_progress; }
     QString downloadedFile() const { return m_file; }
+    QString downloadUrl() const { return m_downloadUrl; }
     QString installKind() const;
 
     // quiet checks don't report "you're up to date" or network errors.
@@ -75,6 +78,7 @@ private:
     double m_progress = 0;
     QString m_file;
     QVariantMap m_asset;
+    QString m_downloadUrl;
     QNetworkAccessManager m_network;
     QPointer<QNetworkReply> m_reply;
     QTimer m_timer;

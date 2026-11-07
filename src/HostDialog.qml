@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import Tether
 
@@ -87,6 +88,19 @@ TSheet {
     }
 
     ListModel { id: forwards }
+
+    // A key file from anywhere; on Android it's copied into Tether's storage.
+    FileDialog {
+        id: keyPicker
+        title: qsTr("Choose a private key")
+        onAccepted: {
+            const result = backend.importKey(selectedFile)
+            if (result.error)
+                dialog.error = result.error
+            else
+                identity.text = result.path
+        }
+    }
 
     // A right-aligned label beside its control, as in a macOS form.
     component FormLabel: Text {
@@ -283,11 +297,19 @@ TSheet {
             Group {
                 visible: dialog.kind === "ssh"
                 FormLabel { text: qsTr("Key file") }
-                TField {
-                    id: identity
+                RowLayout {
                     Layout.fillWidth: true
-                    placeholderText: qsTr("~/.ssh/id_ed25519 (optional)")
-                    onAccepted: dialog.save()
+                    spacing: 6
+                    TField {
+                        id: identity
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("~/.ssh/id_ed25519 (optional)")
+                        onAccepted: dialog.save()
+                    }
+                    TButton {
+                        text: qsTr("Choose…")
+                        onClicked: keyPicker.open()
+                    }
                 }
                 FormLabel { text: qsTr("Jump host") }
                 TField {

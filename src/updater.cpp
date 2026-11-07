@@ -23,8 +23,10 @@ Updater::Updater(const QString &repository, const QString &currentVersion, QObje
 }
 
 QString Updater::installKind() const {
-#ifdef Q_OS_WIN
+#if defined(Q_OS_WIN)
     return "windows";
+#elif defined(Q_OS_ANDROID)
+    return "android";
 #else
     // An AppImage replaces its own file; the Arch package goes through pacman.
     if (qEnvironmentVariableIsSet("APPIMAGE"))
@@ -63,6 +65,7 @@ QVariantMap Updater::pickAsset(const QVariantList &assets, const QString &kind) 
         const bool match = kind == "pacman" ? name.endsWith("-x86_64.pkg.tar.zst") && !name.contains("-debug-")
                          : kind == "windows" ? name.endsWith("-setup.exe")
                          : kind == "appimage" ? name.endsWith("-x86_64.AppImage")
+                         : kind == "android" ? name.endsWith("-android-arm64.apk")
                          : false;
         if (match)
             return asset;
@@ -113,6 +116,7 @@ void Updater::check(bool quiet) {
         m_notes = release.value("body").toString().trimmed();
         m_releaseUrl = release.value("html_url").toString();
         m_asset = pickAsset(release.value("assets").toArray().toVariantList(), installKind());
+        m_downloadUrl = m_asset.value("browser_download_url").toString();
         if (available())
             setState("idle", tr("Tether %1 is available.").arg(m_latest));
         else

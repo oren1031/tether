@@ -90,10 +90,14 @@ TSheet {
             kind: "primary"
             enabled: updater.available && updater.state !== "downloading" && updater.state !== "checking"
             text: updater.state === "ready" ? qsTr("Install")
-                : updater.installKind === "page" ? qsTr("Get it")
+                : updater.installKind === "page" || updater.installKind === "android" ? qsTr("Get it")
                 : qsTr("Download")
             onClicked: {
-                if (updater.installKind === "page") {
+                if (updater.installKind === "android" && updater.downloadUrl) {
+                    // The browser downloads the APK and Android offers to install it.
+                    Qt.openUrlExternally(updater.downloadUrl)
+                    sheet.close()
+                } else if (updater.installKind === "page" || updater.installKind === "android") {
                     Qt.openUrlExternally(updater.releaseUrl)
                     sheet.close()
                 } else if (updater.state === "ready") {
