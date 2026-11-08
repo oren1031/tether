@@ -287,11 +287,20 @@ jobs:
           emulator-options: -no-window -gpu swangle_indirect -noaudio -no-boot-anim -camera-back none
           script: packaging/android/emulator-test.sh Tether-test-x86_64.apk tether-android.png
 
+      - name: Check typing reached the ssh session
+        run: |
+          if [ -f /tmp/tether-typed-on-android ]; then
+            echo "Typed on Android, ran on the server."
+          else
+            echo "The command typed on Android never ran on the server."
+            exit 1
+          fi
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: android-screenshot
-          path: tether-android.png
+          path: tether-android*.png
 
   publish:
     needs: [arch, appimage, windows, android, android-emulator]

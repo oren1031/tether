@@ -165,6 +165,19 @@ ApplicationWindow {
         // On touch screens focusing the search would pop the keyboard up.
         if (!touch)
             Qt.callLater(sidebar.focusSearch)
+        // tether --connect user@host[:port] [--identity key]: straight to a session.
+        const args = Qt.application.arguments
+        const at = args.indexOf("--connect")
+        if (at >= 0 && at + 1 < args.length && args.indexOf("--self-test") < 0) {
+            const profile = backend.quickConnect(args[at + 1])
+            const key = args.indexOf("--identity")
+            if (!profile.error && key >= 0 && key + 1 < args.length)
+                profile.identityFile = args[key + 1]
+            if (profile.error)
+                showMessage(qsTr("Can't connect"), profile.error)
+            else
+                Qt.callLater(() => openTab(profile))
+        }
     }
 
     ListModel { id: tabModel }

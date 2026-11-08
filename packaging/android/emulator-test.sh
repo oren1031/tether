@@ -37,6 +37,29 @@ adb shell am force-stop "$pkg"
 adb shell am start -W -n "$pkg/$activity"
 sleep 15
 adb exec-out screencap -p > "$shot"
+
+# Typing through Android's own input into a live ssh session: connect, tap the
+# terminal, answer the host key question, and run a command that leaves a
+# file on the server for the workflow to find.
+if [ -n "${SSH_TEST:-}" ] && [ -f "${SSH_TEST_KEY:-}" ]; then
+    adb shell am force-stop "$pkg"
+    adb shell pm clear "$pkg" >/dev/null   # forget the host key, so the question comes
+    adb shell am start -W -n "$pkg/$activity" --es applicationArguments \
+        "'--connect $SSH_TEST --identity /data/local/tmp/tether_test_key'"
+    sleep 12
+    size=$(adb shell wm size | sed -n 's/.*: //p' | tail -n 1)
+    w=${size%x*}; h=${size#*x}
+    adb shell input tap $((w / 2)) $((h / 3))
+    sleep 2
+    adb exec-out screencap -p > "${shot%.png}-question.png"
+    adb shell input text yes
+    adb shell input keyevent 66
+    sleep 6
+    adb shell input text "touch%s/tmp/tether-typed-on-android"
+    adb shell input keyevent 66
+    sleep 4
+    adb exec-out screencap -p > "${shot%.png}-session.png"
+fi
 if ! adb logcat -d | grep -q "SELF-TEST PASSED"; then
     echo "── the app's log ──"
     adb logcat -d | grep -E "oren1031|libtether|QtActivity|Qt[A-Z]|qt\.|UnsatisfiedLink|dlopen|linker|AndroidRuntime|F DEBUG|E DEBUG|crash_dump|libcrypto|libssh" \
