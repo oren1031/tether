@@ -23,8 +23,10 @@ else
 fi
 
 # Updates download inside the app and go to Android's installer.
+# (Qt's template has "<application" alone on its line.)
 grep -q REQUEST_INSTALL_PACKAGES "$manifest" || \
-    sed -i 's#<application #<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>\n    <application #' "$manifest"
+    sed -i 's#^\([[:space:]]*\)<application\b#\1<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>\n\1<application#' "$manifest"
+grep -q REQUEST_INSTALL_PACKAGES "$manifest" || { echo "couldn't add the install permission" >&2; exit 1; }
 
 for size in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
     dir="$out/res/mipmap-${size%%:*}"
