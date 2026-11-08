@@ -398,7 +398,7 @@ ApplicationWindow {
                         kind: "toolbar"
                         iconName: "folder"
                         iconSize: 16
-                        visible: win.activeIsSsh
+                        visible: win.activeIsSsh && backend.sftpAvailable
                         ToolTip.visible: hovered
                         ToolTip.delay: 600
                         ToolTip.text: qsTr("Files on this host (Ctrl+Shift+F)")

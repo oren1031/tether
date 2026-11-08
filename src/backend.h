@@ -22,6 +22,7 @@ class Backend : public QObject {
     Q_PROPERTY(bool keyringAvailable READ keyringAvailable CONSTANT)
     Q_PROPERTY(bool moshAvailable READ moshAvailable CONSTANT)
     Q_PROPERTY(bool tmuxAvailable READ tmuxAvailable CONSTANT)
+    Q_PROPERTY(bool sftpAvailable READ sftpAvailable CONSTANT)
     Q_PROPERTY(QString syncStatus READ syncStatus NOTIFY syncStatusChanged)
     // A serial device name as this system writes them, for hints.
     Q_PROPERTY(QString exampleDevice READ exampleDevice CONSTANT)
@@ -63,6 +64,7 @@ public:
 #endif
     bool moshAvailable() const { return !tool("mosh").isEmpty(); }
     bool tmuxAvailable() const { return !tool("tmux").isEmpty(); }
+    bool sftpAvailable() const { return !tool("sftp").isEmpty(); }
 
     // Local tmux sessions Tether started that nothing is attached to, so a
     // shell left running when Tether closed can be picked up again.

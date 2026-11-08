@@ -447,7 +447,7 @@ Rectangle {
         TMenuItem { text: qsTr("Connect"); onTriggered: side.connectCurrent() }
         TMenuItem {
             readonly property var row: side.current()
-            visible: row !== null && JSON.parse(row.profile).kind === "ssh"
+            visible: row !== null && JSON.parse(row.profile).kind === "ssh" && backend.sftpAvailable
             height: visible ? implicitHeight : 0
             text: qsTr("Browse files")
             onTriggered: side.filesRequested(JSON.parse(side.current().profile))
