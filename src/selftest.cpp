@@ -14,6 +14,7 @@
 #include <QFile>
 #ifdef Q_OS_ANDROID
 #include <QJniObject>
+#include <QtCore/qcoreapplication_platform.h>
 #include <QCoreApplication>
 #endif
 #include <QInputMethodEvent>

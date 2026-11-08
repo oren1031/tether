@@ -646,7 +646,8 @@ private slots:
             QVariantMap asking = settings;
             asking.remove("passphrase");
             TerminalView phone;
-            phone.setSize(QSizeF(900, 400));
+            // Narrow, like a phone: the prompt and the stars wrap.
+            phone.setSize(QSizeF(380, 400));
             QSignalSpy ended(&phone, &TerminalView::finished);
             QVERIFY(phone.startSsh(asking));
             QTRY_VERIFY_WITH_TIMEOUT(phone.screenText(10).contains("Enter passphrase"), 10000);

@@ -1,7 +1,11 @@
 #include "updater.h"
 
 #include <QCoreApplication>
-#include <QDesktopServices>
+#ifdef Q_OS_ANDROID
+#include <QJniEnvironment>
+#include <QJniObject>
+#include <QtCore/qcoreapplication_platform.h>
+#endif
 #include <QUrl>
 #include <QDir>
 #include <QProcess>
@@ -197,7 +201,28 @@ QString Updater::updatesDirectory() {
 // which asks "Do you want to update this app?" and installs it over this one.
 bool Updater::openAndroidInstaller(const QString &apk) {
 #ifdef Q_OS_ANDROID
-    return QDesktopServices::openUrl(QUrl::fromLocalFile(apk));
+    // An ACTION_VIEW intent for the APK through Qt's FileProvider (which
+    // shares the files folder), with permission for the installer to read it.
+    const QJniObject context = QNativeInterface::QAndroidApplication::context();
+    if (!context.isValid())
+        return false;
+    const QString package = context.callObjectMethod("getPackageName", "()Ljava/lang/String;").toString();
+    const QJniObject file("java/io/File", "(Ljava/lang/String;)V", QJniObject::fromString(apk).object<jstring>());
+    const QJniObject uri = QJniObject::callStaticObjectMethod(
+        "androidx/core/content/FileProvider", "getUriForFile",
+        "(Landroid/content/Context;Ljava/lang/String;Ljava/io/File;)Landroid/net/Uri;",
+        context.object(), QJniObject::fromString(package + ".qtprovider").object<jstring>(), file.object());
+    QJniEnvironment env;
+    if (env.checkAndClearExceptions() || !uri.isValid())
+        return false;
+    QJniObject intent("android/content/Intent", "(Ljava/lang/String;)V",
+                      QJniObject::fromString("android.intent.action.VIEW").object<jstring>());
+    intent.callObjectMethod("setDataAndType", "(Landroid/net/Uri;Ljava/lang/String;)Landroid/content/Intent;",
+                            uri.object(), QJniObject::fromString("application/vnd.android.package-archive").object<jstring>());
+    const jint grantRead = 0x00000001, newTask = 0x10000000;
+    intent.callObjectMethod("addFlags", "(I)Landroid/content/Intent;", grantRead | newTask);
+    context.callMethod<void>("startActivity", "(Landroid/content/Intent;)V", intent.object());
+    return !env.checkAndClearExceptions();
 #else
     Q_UNUSED(apk)
     return false;

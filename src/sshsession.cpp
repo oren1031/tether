@@ -142,8 +142,11 @@ QString SshSession::ask(const QString &prompt, bool echo) {
     say(prompt);
     // A secret: the keyboard switches to password mode (no suggestions,
     // capitals, or added spaces), and each character shows as a star.
-    if (!echo)
+    if (!echo) {
         emit secretInput(true);
+        emit dataReceived("\x1b" "7"); // where the stars start
+    }
+    int stars = 0;
     auto done = [&](const QString &answer) {
         if (!echo)
             emit secretInput(false);
@@ -164,7 +167,13 @@ QString SshSession::ask(const QString &prompt, bool echo) {
                     while (cut > 0 && (uchar(line[cut]) & 0xC0) == 0x80)
                         --cut;
                     line.truncate(cut);
-                    emit dataReceived("\b \b");
+                    if (echo) {
+                        emit dataReceived("\b \b");
+                    } else {
+                        // Redrawn from the start, which stays right across a line wrap.
+                        --stars;
+                        emit dataReceived("\x1b" "8" "\x1b[J" + QByteArray(stars, '*'));
+                    }
                 }
                 continue;
             }
@@ -178,8 +187,10 @@ QString SshSession::ask(const QString &prompt, bool echo) {
             line += c;
             if (echo)
                 emit dataReceived(QByteArray(1, c));
-            else if ((uchar(c) & 0xC0) != 0x80) // one star per character
+            else if ((uchar(c) & 0xC0) != 0x80) { // one star per character
+                ++stars;
                 emit dataReceived("*");
+            }
         }
         msleep(20);
     }
