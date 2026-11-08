@@ -39,6 +39,7 @@ class TerminalView : public QQuickPaintedItem {
     // On-screen Ctrl and Alt for touch keyboards: they apply to the next key.
     Q_PROPERTY(bool stickyCtrl READ stickyCtrl WRITE setStickyCtrl NOTIFY stickyChanged)
     Q_PROPERTY(bool stickyAlt READ stickyAlt WRITE setStickyAlt NOTIFY stickyChanged)
+    Q_PROPERTY(bool secretInput READ secretInput NOTIFY secretInputChanged)
 
 public:
     explicit TerminalView(QQuickItem *parent = nullptr);
@@ -83,6 +84,7 @@ public:
     // A named key from an on-screen row: esc, tab, up, down, left, right,
     // home, end, pgup, pgdn; honors the sticky Ctrl and Alt.
     Q_INVOKABLE void sendKey(const QString &name);
+    bool secretInput() const { return m_secretInput; }
     bool stickyCtrl() const { return m_stickyCtrl; }
     void setStickyCtrl(bool on) { if (on != m_stickyCtrl) { m_stickyCtrl = on; emit stickyChanged(); } }
     bool stickyAlt() const { return m_stickyAlt; }
@@ -113,6 +115,7 @@ signals:
     void bell();
     void stickyChanged();
     void hostKeyQuestion(const QString &host, const QString &keyType, const QString &fingerprint, bool changed);
+    void secretInputChanged();
 
 protected:
     void geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) override;
@@ -210,6 +213,8 @@ private:
     VTermModifier takeSticky();
     void typeCharacters(const QString &text);
     QString m_composing;  // composing text from a touch keyboard, already typed
+    bool m_secretInput = false;  // a password prompt: the keyboard goes to password mode
+    void setSecretInput(bool on);
     int m_selectUnit = 0; // 0 characters, 1 words, 2 lines
     qint64 m_lastDoubleClick = 0;
     int m_mouseButtonsDown = 0;

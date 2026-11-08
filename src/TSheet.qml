@@ -9,6 +9,18 @@ import Tether
 Dialog {
     id: sheet
     property string subtitle: ""
+    // Big sheets (settings, editors) fill a phone's screen instead of floating.
+    property bool large: false
+    readonly property bool fills: large && Style.compact
+
+    function preferredWidth(most) {
+        const w = Overlay.overlay ? Overlay.overlay.width : most
+        return fills ? w : Math.min(most, w - 40)
+    }
+    function preferredHeight(most) {
+        const h = Overlay.overlay ? Overlay.overlay.height : most
+        return fills ? h : Math.min(most, h - 40)
+    }
 
     modal: true
     anchors.centerIn: Overlay.overlay
@@ -31,7 +43,7 @@ Dialog {
         Rectangle {
             id: panel
             anchors.fill: parent
-            radius: Style.radiusLarge
+            radius: sheet.fills ? 0 : Style.radiusLarge
             color: Style.sheet
             border.color: Qt.rgba(1, 1, 1, 0.10)
         }

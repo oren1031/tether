@@ -26,6 +26,9 @@ class Backend : public QObject {
     Q_PROPERTY(QString syncStatus READ syncStatus NOTIFY syncStatusChanged)
     // A serial device name as this system writes them, for hints.
     Q_PROPERTY(QString exampleDevice READ exampleDevice CONSTANT)
+    // Phones and tablets: bigger targets, no keyboard shortcuts. TETHER_TOUCH=1
+    // turns it on elsewhere, to try the phone layout.
+    Q_PROPERTY(bool touchUi READ touchUi CONSTANT)
     Q_PROPERTY(QString logDirectory READ logDirectory CONSTANT)
     Q_PROPERTY(QString loadError READ loadError CONSTANT)
 
@@ -84,6 +87,13 @@ public:
     // mirrored to tether-hosts.json in the syncFolder setting, for Syncthing,
     // Dropbox, or a git repository to carry between computers.
     QString syncStatus() const { return m_syncStatus; }
+    static bool touchUi() {
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
+        return true;
+#else
+        return qEnvironmentVariable("TETHER_TOUCH") == "1";
+#endif
+    }
 #ifdef Q_OS_WIN
     static QString exampleDevice() { return QStringLiteral("COM3"); }
 #else

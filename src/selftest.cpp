@@ -2,13 +2,20 @@
 
 #include "credentials.h"
 #include "terminalview.h"
+#include "updater.h"
 
 #include <QCoreApplication>
 #include <QQmlApplicationEngine>
 #include <QQuickWindow>
 #include <QImage>
 #include <QElapsedTimer>
+#include <QDir>
 #include <QEventLoop>
+#include <QFile>
+#ifdef Q_OS_ANDROID
+#include <QJniObject>
+#include <QCoreApplication>
+#endif
 #include <QInputMethodEvent>
 #include <QProcess>
 #include <QProcessEnvironment>
@@ -183,6 +190,23 @@ int finishSelfTest(QQmlApplicationEngine &engine, const QStringList &arguments) 
         report(text.contains("tether-ssh-42"), "log in with the built-in ssh and run a command",
                text.right(300).replace('\n', " | "));
         report(exitCode == 4, "get the remote exit code", QString::number(exitCode));
+    }
+#endif
+
+#ifdef Q_OS_ANDROID
+    // 4. Optionally, an update handed to Android's installer: this app's own
+    //    APK, from where updates download to. The emulator test then checks
+    //    the installer came up.
+    if (arguments.contains("--try-install")) {
+        const QJniObject context = QNativeInterface::QAndroidApplication::context();
+        const QString own = context.callObjectMethod("getPackageCodePath", "()Ljava/lang/String;").toString();
+        const QString directory = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/updates";
+        QDir().mkpath(directory);
+        const QString copy = directory + "/self-test.apk";
+        QFile::remove(copy);
+        const bool copied = QFile::copy(own, copy);
+        report(copied, "download an update where the installer can read it", copy);
+        report(copied && Updater::openAndroidInstaller(copy), "hand it to Android's installer");
     }
 #endif
 

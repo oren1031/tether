@@ -640,6 +640,35 @@ private slots:
         QVERIFY(!again.screenText(20).contains("continue connecting"));
         QVERIFY2(again.screenText(20).contains("ssh-ok-5"), qPrintable(again.screenText(20)));
 
+        // A passphrase typed on a phone keyboard: composing text with a
+        // correction, a space, and stars for each character.
+        {
+            QVariantMap asking = settings;
+            asking.remove("passphrase");
+            TerminalView phone;
+            phone.setSize(QSizeF(900, 400));
+            QSignalSpy ended(&phone, &TerminalView::finished);
+            QVERIFY(phone.startSsh(asking));
+            QTRY_VERIFY_WITH_TIMEOUT(phone.screenText(10).contains("Enter passphrase"), 10000);
+            QTRY_VERIFY_WITH_TIMEOUT(phone.secretInput(), 2000);
+            auto compose = [&](const QString &preedit, const QString &commit = {}) {
+                QInputMethodEvent event(preedit, {});
+                if (!commit.isNull())
+                    event.setCommitString(commit);
+                QCoreApplication::sendEvent(&phone, &event);
+            };
+            compose("p"); compose("pa"); compose("pas"); compose("pass");
+            compose("", "pass ");
+            compose("phr"); compose("phrr"); compose("phr"); compose("phrase");
+            compose("", "phrase");
+            QTRY_VERIFY_WITH_TIMEOUT(phone.screenText(10).contains("***********"), 3000);
+            QVERIFY(!phone.screenText(10).contains("pass phrase"));
+            phone.sendKey("enter");
+            QVERIFY(ended.wait(15000));
+            QCOMPARE(ended.first().first().toInt(), 5);
+            QVERIFY(!phone.secretInput());
+        }
+
         // The server gets a new key: the question says so; turning it down
         // ends without a reconnect (254), trusting it replaces the old key.
         server.kill();

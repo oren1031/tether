@@ -90,10 +90,15 @@ QtObject {
     readonly property int radius: 8
     readonly property int radiusLarge: 12
 
-    readonly property int fontSize: settings.interfaceFontSize || 13
+    // Touch screens get bigger text and targets; compact is set by the window
+    // when it's phone-narrow, and sheets then fill it.
+    readonly property bool touch: backend.touchUi
+    property bool compact: false
+    readonly property int fontSize: (settings.interfaceFontSize || 13) + (touch ? 2 : 0)
     readonly property int smallFontSize: fontSize - 2
     readonly property int titleFontSize: fontSize + 2
-    readonly property int controlHeight: fontSize + 15
+    readonly property int controlHeight: touch ? 40 : fontSize + 15
+    readonly property int toolbarButton: touch ? 40 : 28
 
     readonly property int fast: 120
     readonly property int normal: 200

@@ -22,6 +22,10 @@ else
     sed -i 's#<application #<application android:icon="@mipmap/ic_launcher" #' "$manifest"
 fi
 
+# Updates download inside the app and go to Android's installer.
+grep -q REQUEST_INSTALL_PACKAGES "$manifest" || \
+    sed -i 's#<application #<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>\n    <application #' "$manifest"
+
 for size in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
     dir="$out/res/mipmap-${size%%:*}"
     mkdir -p "$dir"

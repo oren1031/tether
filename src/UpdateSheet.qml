@@ -8,8 +8,9 @@ TSheet {
     id: sheet
     signal installRequested(var command)
 
-    width: Math.min(520, Overlay.overlay ? Overlay.overlay.width - 40 : 520)
-    height: Math.min(520, Overlay.overlay ? Overlay.overlay.height - 40 : 520)
+    large: true
+    width: preferredWidth(520)
+    height: preferredHeight(520)
     title: updater.available ? qsTr("Tether %1 is available").arg(updater.latestVersion) : qsTr("Updates")
     subtitle: qsTr("You have %1.").arg(updater.currentVersion)
 
@@ -67,7 +68,9 @@ TSheet {
             color: updater.state === "error" ? Style.red : Style.secondaryLabel
             text: updater.message
                   + (updater.state === "ready" && updater.installKind === "pacman"
-                     ? " " + qsTr("Installing opens a tab where sudo asks for your password; restart Tether when it's done.") : "")
+                     ? " " + qsTr("Installing opens a tab where sudo asks for your password; restart Tether when it's done.")
+                     : updater.state === "ready" && updater.installKind === "android"
+                     ? " " + qsTr("Android asks to install it over this version; allow installing from Tether if it asks.") : "")
         }
     }
 
@@ -90,14 +93,10 @@ TSheet {
             kind: "primary"
             enabled: updater.available && updater.state !== "downloading" && updater.state !== "checking"
             text: updater.state === "ready" ? qsTr("Install")
-                : updater.installKind === "page" || updater.installKind === "android" ? qsTr("Get it")
+                : updater.installKind === "page" ? qsTr("Get it")
                 : qsTr("Download")
             onClicked: {
-                if (updater.installKind === "android" && updater.downloadUrl) {
-                    // The browser downloads the APK and Android offers to install it.
-                    Qt.openUrlExternally(updater.downloadUrl)
-                    sheet.close()
-                } else if (updater.installKind === "page" || updater.installKind === "android") {
+                if (updater.installKind === "page") {
                     Qt.openUrlExternally(updater.releaseUrl)
                     sheet.close()
                 } else if (updater.state === "ready") {

@@ -41,6 +41,8 @@ signals:
     void dataReceived(const QByteArray &data);
     // A host key to trust or not: new, or changed since last time.
     void hostKeyQuestion(const QString &host, const QString &keyType, const QString &fingerprint, bool changed);
+    // A password or passphrase is being typed (true) or done (false).
+    void secretInput(bool on);
     void finished(int exitCode);
 
 protected:

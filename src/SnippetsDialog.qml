@@ -13,8 +13,9 @@ TSheet {
     property bool editing: false
     property string error: ""
 
-    width: Math.min(620, Overlay.overlay ? Overlay.overlay.width - 40 : 620)
-    height: Math.min(520, Overlay.overlay ? Overlay.overlay.height - 40 : 520)
+    large: true
+    width: preferredWidth(620)
+    height: preferredHeight(520)
     title: editing ? (editingId ? qsTr("Edit snippet") : qsTr("New snippet")) : qsTr("Snippets")
     bottomPadding: 20
 
@@ -217,21 +218,46 @@ TSheet {
                     }
                 }
             }
-            Caption { text: qsTr("Enter sends to the focused pane. Shift+Enter sends to every pane in this tab.") }
-            RowLayout {
-                spacing: 2
-                TButton { kind: "toolbar"; iconName: "plus"; ToolTip.visible: hovered; ToolTip.text: qsTr("New"); onClicked: dialog.edit(null) }
-                TButton { kind: "plain"; text: qsTr("Edit"); enabled: list.currentIndex >= 0; onClicked: dialog.edit(dialog.current()) }
-                TButton {
-                    kind: "plain"
-                    text: qsTr("Delete")
-                    enabled: list.currentIndex >= 0
-                    onClicked: dialog.error = backend.removeSnippet(dialog.current().id)
+            Caption {
+                text: Style.touch ? qsTr("Send types it into the terminal; Send to all panes types it into every pane in this tab.")
+                                  : qsTr("Enter sends to the focused pane. Shift+Enter sends to every pane in this tab.")
+            }
+            // One row on a desktop; on a phone the send buttons get their own.
+            GridLayout {
+                Layout.fillWidth: true
+                columns: Style.compact ? 1 : 2
+                columnSpacing: 8
+                rowSpacing: 8
+                RowLayout {
+                    spacing: 2
+                    TButton { kind: "toolbar"; iconName: "plus"; ToolTip.visible: hovered; ToolTip.text: qsTr("New"); onClicked: dialog.edit(null) }
+                    TButton { kind: "plain"; text: qsTr("Edit"); enabled: list.currentIndex >= 0; onClicked: dialog.edit(dialog.current()) }
+                    TButton {
+                        kind: "plain"
+                        text: qsTr("Delete")
+                        enabled: list.currentIndex >= 0
+                        onClicked: dialog.error = backend.removeSnippet(dialog.current().id)
+                    }
+                    Item { Layout.fillWidth: true }
                 }
-                Item { Layout.fillWidth: true }
-                TButton { text: qsTr("Send to all panes"); enabled: list.currentIndex >= 0 && dialog.page !== null; onClicked: dialog.send(true) }
-                Item { implicitWidth: 8 }
-                TButton { text: qsTr("Send"); kind: "primary"; enabled: list.currentIndex >= 0 && dialog.page !== null; onClicked: dialog.send(false) }
+                RowLayout {
+                    Layout.fillWidth: Style.compact
+                    Layout.alignment: Qt.AlignRight
+                    spacing: 8
+                    TButton {
+                        Layout.fillWidth: Style.compact
+                        text: qsTr("Send to all panes")
+                        enabled: list.currentIndex >= 0 && dialog.page !== null
+                        onClicked: dialog.send(true)
+                    }
+                    TButton {
+                        Layout.fillWidth: Style.compact
+                        text: qsTr("Send")
+                        kind: "primary"
+                        enabled: list.currentIndex >= 0 && dialog.page !== null
+                        onClicked: dialog.send(false)
+                    }
+                }
             }
         }
 

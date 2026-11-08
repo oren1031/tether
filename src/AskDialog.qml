@@ -13,7 +13,7 @@ TSheet {
     property bool risky: false
     property string error: ""
 
-    width: Math.min(620, Overlay.overlay ? Overlay.overlay.width - 40 : 620)
+    width: preferredWidth(620)
     title: qsTr("Ask for a command")
     subtitle: {
         const p = page && page.activePane && page.activePane.launch ? page.activePane.launch.profile || {} : {}
@@ -176,7 +176,8 @@ TSheet {
             font.family: Style.fontFamily
             font.pixelSize: Style.smallFontSize
             color: Style.tertiaryLabel
-            text: dialog.command ? qsTr("Enter types it into the terminal; Ctrl+Enter runs it too.")
+            text: dialog.command ? (Style.touch ? qsTr("Insert types it into the terminal; Run presses Enter too.")
+                                                : qsTr("Enter types it into the terminal; Ctrl+Enter runs it too."))
                                  : assistant.route === "claude-code" ? qsTr("Uses your Claude subscription through Claude Code.")
                                  : qsTr("Uses %1 through your Anthropic API key.").arg("Claude Opus 5.5")
         }

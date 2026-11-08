@@ -15,8 +15,9 @@ TSheet {
     property string transport: "ssh"
     property var startupIds: []
 
-    width: Math.min(560, Overlay.overlay ? Overlay.overlay.width - 40 : 560)
-    height: Math.min(700, Overlay.overlay ? Overlay.overlay.height - 40 : 700)
+    large: true
+    width: preferredWidth(560)
+    height: preferredHeight(700)
     title: profileId ? qsTr("Edit %1").arg(name.text) : kind === "ssh" ? qsTr("New host") : qsTr("New serial port")
     subtitle: kind === "ssh" ? qsTr("To sign in without typing a password, save it as a login in Settings → Vault and pick it below.") : ""
     padding: 0
@@ -103,14 +104,21 @@ TSheet {
     }
 
     // A right-aligned label beside its control, as in a macOS form.
+    // Beside its field on a desktop, above it on a phone.
     component FormLabel: Text {
-        Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
-        Layout.preferredWidth: 110
-        horizontalAlignment: Text.AlignRight
+        Layout.alignment: Style.compact ? Qt.AlignLeft | Qt.AlignBottom : Qt.AlignRight | Qt.AlignVCenter
+        Layout.preferredWidth: Style.compact ? -1 : 110
+        Layout.topMargin: Style.compact ? 4 : 0
+        horizontalAlignment: Style.compact ? Text.AlignLeft : Text.AlignRight
         font.family: Style.fontFamily
         font.pixelSize: Style.fontSize
         color: Style.secondaryLabel
         elide: Text.ElideRight
+    }
+    // Holds the label column's place on a desktop; nothing on a phone.
+    component Spacer: Item {
+        visible: !Style.compact
+        Layout.preferredWidth: 110
     }
     component Hint: Text {
         Layout.fillWidth: true
@@ -130,9 +138,9 @@ TSheet {
             id: groupGrid
             anchors.fill: parent
             anchors.margins: 12
-            columns: 2
+            columns: Style.compact ? 1 : 2
             columnSpacing: 12
-            rowSpacing: 10
+            rowSpacing: Style.compact ? 6 : 10
         }
     }
 
@@ -184,7 +192,7 @@ TSheet {
                     visible: dialog.kind === "ssh"
                     Layout.fillWidth: true
                     placeholderText: login.currentIndex > 0 ? qsTr("From the login: %1").arg(backend.identities[login.currentIndex - 1].user || qsTr("none"))
-                                                            : qsTr("From ~/.ssh/config or your login")
+                                                            : Style.touch ? qsTr("Your user on the server") : qsTr("From ~/.ssh/config or your login")
                     onAccepted: dialog.save()
                 }
                 FormLabel { visible: dialog.kind === "ssh"; text: qsTr("Login") }
@@ -217,8 +225,10 @@ TSheet {
 
             Group {
                 visible: dialog.kind === "ssh"
-                FormLabel { text: qsTr("Connect with") }
+                // Only where mosh could run.
+                FormLabel { visible: !Style.touch || backend.moshAvailable; text: qsTr("Connect with") }
                 RowLayout {
+                    visible: !Style.touch || backend.moshAvailable
                     Layout.fillWidth: true
                     spacing: 10
                     TSegmented {
@@ -238,17 +248,17 @@ TSheet {
                               : qsTr("Works everywhere.")
                     }
                 }
-                Item { implicitWidth: 1 }
+                Spacer {}
                 TCheck {
                     id: persistent
                     Layout.fillWidth: true
                     text: qsTr("Keep the session running on the server (tmux)")
                 }
-                Item { implicitWidth: 1 }
+                Spacer {}
                 Text {
                     Layout.fillWidth: true
                     Layout.leftMargin: 26
-                    Layout.topMargin: -8
+                    Layout.topMargin: Style.compact ? 0 : -8
                     visible: persistent.checked
                     wrapMode: Text.Wrap
                     font.family: Style.fontFamily
@@ -256,7 +266,7 @@ TSheet {
                     color: Style.tertiaryLabel
                     text: qsTr("Programs keep running if the connection drops or Tether closes; connecting again picks up where you left off. Uses tmux on the server when it's there.")
                 }
-                Item { implicitWidth: 1; visible: dialog.transport === "ssh" }
+                Spacer { visible: !Style.compact && dialog.transport === "ssh" }
                 TCheck {
                     id: reconnect
                     visible: dialog.transport === "ssh"
@@ -268,7 +278,7 @@ TSheet {
             Group {
                 visible: backend.snippets.length > 0
                 FormLabel {
-                    Layout.alignment: Qt.AlignRight | Qt.AlignTop
+                    Layout.alignment: (Style.compact ? Qt.AlignLeft : Qt.AlignRight) | Qt.AlignTop
                     Layout.topMargin: 2
                     text: qsTr("Run on connect")
                 }
@@ -319,7 +329,7 @@ TSheet {
                     onAccepted: dialog.save()
                 }
                 FormLabel {
-                    Layout.alignment: Qt.AlignRight | Qt.AlignTop
+                    Layout.alignment: (Style.compact ? Qt.AlignLeft : Qt.AlignRight) | Qt.AlignTop
                     Layout.topMargin: 8
                     text: qsTr("ssh options")
                 }
@@ -339,7 +349,7 @@ TSheet {
             Group {
                 visible: dialog.kind === "ssh"
                 FormLabel {
-                    Layout.alignment: Qt.AlignRight | Qt.AlignTop
+                    Layout.alignment: (Style.compact ? Qt.AlignLeft : Qt.AlignRight) | Qt.AlignTop
                     Layout.topMargin: 6
                     text: qsTr("Port forwarding")
                 }
@@ -435,7 +445,7 @@ TSheet {
                     valueRole: "value"
                     model: [{ value: "cr", text: "CR" }, { value: "lf", text: "LF" }, { value: "crlf", text: "CR LF" }]
                 }
-                Item { implicitWidth: 1 }
+                Spacer {}
                 TCheck {
                     id: echo
                     Layout.fillWidth: true
@@ -444,7 +454,7 @@ TSheet {
             }
 
             Group {
-                Item { Layout.preferredWidth: 110 }
+                Spacer {}
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: 4

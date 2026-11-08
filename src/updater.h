@@ -53,7 +53,9 @@ public:
     // Starts the installed Tether again and quits this one.
     Q_INVOKABLE void restart();
     // Windows: starts the setup program, which closes Tether and reopens it.
+    // Android: opens the system installer on the downloaded APK.
     Q_INVOKABLE bool launchInstaller();
+    static bool openAndroidInstaller(const QString &apk);
     // AppImage: swaps the downloaded file in for the running one and restarts.
     Q_INVOKABLE bool replaceAppImage();
 

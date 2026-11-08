@@ -177,7 +177,9 @@ Rectangle {
             Layout.margins: 10
             Layout.bottomMargin: 6
             iconName: "search"
-            placeholderText: Qt.platform.os === "windows" ? qsTr("Search, user@host, or COM3") : qsTr("Search, user@host, or /dev/…")
+            placeholderText: Qt.platform.os === "windows" ? qsTr("Search, user@host, or COM3")
+                           : Qt.platform.os === "android" ? qsTr("Search, or user@host")
+                           : qsTr("Search, user@host, or /dev/…")
             onTextChanged: side.rebuild()
             onAccepted: side.connectCurrent()
             Keys.onDownPressed: { list.forceActiveFocus(); list.incrementCurrentIndex() }
@@ -425,6 +427,7 @@ Rectangle {
                 onClicked: side.settingsRequested()
             }
             TButton {
+                visible: !Style.touch
                 kind: "toolbar"
                 iconName: "keyboard"
                 iconSize: 17

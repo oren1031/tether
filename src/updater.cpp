@@ -1,6 +1,8 @@
 #include "updater.h"
 
 #include <QCoreApplication>
+#include <QDesktopServices>
+#include <QUrl>
 #include <QDir>
 #include <QProcess>
 #include <QFile>
@@ -181,7 +183,20 @@ void Updater::restart() {
     QCoreApplication::quit();
 }
 
+// Android: the APK goes to the system installer through Qt's file provider,
+// which asks "Do you want to update this app?" and installs it over this one.
+bool Updater::openAndroidInstaller(const QString &apk) {
+#ifdef Q_OS_ANDROID
+    return QDesktopServices::openUrl(QUrl::fromLocalFile(apk));
+#else
+    Q_UNUSED(apk)
+    return false;
+#endif
+}
+
 bool Updater::launchInstaller() {
+    if (installKind() == "android")
+        return !m_file.isEmpty() && openAndroidInstaller(m_file);
     const QVariantMap command = installCommand();
     if (command.isEmpty() || installKind() != "windows")
         return false;

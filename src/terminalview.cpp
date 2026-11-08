@@ -278,6 +278,7 @@ bool TerminalView::startSsh(const QVariantMap &settings) {
         feed(data);
     }, Qt::QueuedConnection);
     connect(m_ssh, &SshSession::hostKeyQuestion, this, &TerminalView::hostKeyQuestion, Qt::QueuedConnection);
+    connect(m_ssh, &SshSession::secretInput, this, &TerminalView::setSecretInput, Qt::QueuedConnection);
     connect(m_ssh, &SshSession::finished, this, [this](int code) {
         m_sshRunning = false;
         emit runningChanged();
@@ -293,6 +294,19 @@ bool TerminalView::startSsh(const QVariantMap &settings) {
     emit finished(255);
     return false;
 #endif
+}
+
+void TerminalView::setSecretInput(bool on) {
+    if (on == m_secretInput)
+        return;
+    m_secretInput = on;
+    m_composing.clear();
+    // Tell the keyboard its kind of field changed, so it switches modes.
+    if (QGuiApplication::inputMethod()) {
+        QGuiApplication::inputMethod()->reset();
+        QGuiApplication::inputMethod()->update(Qt::ImHints | Qt::ImEnabled);
+    }
+    emit secretInputChanged();
 }
 
 void TerminalView::answerHostKey(bool trust) {
@@ -981,6 +995,8 @@ QVariant TerminalView::inputMethodQuery(Qt::InputMethodQuery query) const {
     case Qt::ImHints:
         // Sensitive data keeps touch keyboards from holding words back for
         // suggestions, so each letter reaches the terminal as it's typed.
+        if (m_secretInput)
+            return int(Qt::ImhHiddenText | Qt::ImhSensitiveData | Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase);
         return int(Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase | Qt::ImhSensitiveData | Qt::ImhPreferLatin);
     default:
         return QQuickPaintedItem::inputMethodQuery(query);

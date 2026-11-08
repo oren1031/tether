@@ -30,7 +30,8 @@ ApplicationWindow {
     // Phones and narrow windows: the sidebar takes the whole width while it's
     // open and steps aside once a session starts.
     readonly property bool narrow: width < 720
-    readonly property bool touch: Qt.platform.os === "android" || Qt.platform.os === "ios"
+    readonly property bool touch: backend.touchUi
+    Binding { target: Style; property: "compact"; value: win.width < 600 }
     property bool sidebarVisible: true
     onNarrowChanged: if (narrow && tabModel.count > 0) sidebarVisible = false
     property bool quitting: false
@@ -48,6 +49,11 @@ ApplicationWindow {
         if (updater.installKind === "appimage") {
             if (!updater.replaceAppImage())
                 showMessage(qsTr("Update"), updater.message || qsTr("The update couldn't be installed."))
+            return
+        }
+        if (updater.installKind === "android") {
+            if (!updater.launchInstaller())
+                showMessage(qsTr("Update"), qsTr("Android's installer couldn't open. Get the update from the release page."))
             return
         }
         if (updater.installKind === "windows") {
@@ -165,8 +171,16 @@ ApplicationWindow {
         // On touch screens focusing the search would pop the keyboard up.
         if (!touch)
             Qt.callLater(sidebar.focusSearch)
-        // tether --connect user@host[:port] [--identity key]: straight to a session.
+        // tether --open settings|new-host: straight to that screen.
         const args = Qt.application.arguments
+        const show = args.indexOf("--open")
+        if (show >= 0 && show + 1 < args.length) {
+            if (args[show + 1] === "settings")
+                Qt.callLater(() => settingsDialog.openAt(0))
+            else if (args[show + 1] === "new-host")
+                Qt.callLater(() => hostDialog.openFor({ kind: "ssh" }))
+        }
+        // tether --connect user@host[:port] [--identity key]: straight to a session.
         const at = args.indexOf("--connect")
         if (at >= 0 && at + 1 < args.length && args.indexOf("--self-test") < 0) {
             const profile = backend.quickConnect(args[at + 1])
@@ -320,6 +334,7 @@ ApplicationWindow {
                     }
 
                     Item {
+                        clip: true
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         TabBar {
@@ -337,7 +352,7 @@ ApplicationWindow {
                                     id: tab
                                     required property int index
                                     required property string title
-                                    width: Math.max(120, Math.min(240, (tabs.width - (tabModel.count - 1) * tabs.spacing) / tabModel.count))
+                                    width: Math.max(Style.compact ? 92 : 120, Math.min(240, (tabs.width - (tabModel.count - 1) * tabs.spacing) / tabModel.count))
                                     height: 30
                                     hoverEnabled: true
                                     onClicked: win.focusActivePane()
@@ -373,7 +388,8 @@ ApplicationWindow {
                                             width: 18
                                             height: 18
                                             radius: 4
-                                            visible: tab.hovered
+                                            // No hover on touch screens: the current tab always shows it.
+                                            visible: tab.hovered || (Style.touch && tab.checked)
                                             color: closeArea.containsMouse ? Qt.rgba(1, 1, 1, 0.12) : "transparent"
                                             Icon {
                                                 anchors.centerIn: parent
@@ -492,7 +508,8 @@ ApplicationWindow {
                         font.family: Style.fontFamily
                         font.pixelSize: Style.fontSize
                         color: Style.secondaryLabel
-                        text: qsTr("Pick a host or serial port on the left, or type user@host to connect. Press F1 for shortcuts.")
+                        text: Style.touch ? qsTr("Pick a host, or type user@host in the search to connect.")
+                                          : qsTr("Pick a host or serial port on the left, or type user@host to connect. Press F1 for shortcuts.")
                     }
                     RowLayout {
                         Layout.alignment: Qt.AlignHCenter

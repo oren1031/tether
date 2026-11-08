@@ -20,8 +20,9 @@ TSheet {
     property int section: 0
     property string error: ""
 
-    width: Math.min(820, Overlay.overlay ? Overlay.overlay.width - 40 : 820)
-    height: Math.min(600, Overlay.overlay ? Overlay.overlay.height - 40 : 600)
+    large: true
+    width: preferredWidth(820)
+    height: preferredHeight(600)
     title: qsTr("Settings")
     padding: 0
     topPadding: 0
@@ -34,13 +35,19 @@ TSheet {
         { name: qsTr("Hosts"), icon: "server", color: Style.indigo },
         { name: qsTr("Snippets"), icon: "snippets", color: Style.orange },
         { name: qsTr("Vault"), icon: "key", color: "#D4A017" },
-        { name: qsTr("Sessions"), icon: "infinity", color: Style.green },
-        { name: qsTr("Sync"), icon: "cloud", color: "#32ADE6" },
+        // Desktop-only sections aren't listed on phones.
+        { name: qsTr("Sessions"), icon: "infinity", color: Style.green, desktop: true },
+        { name: qsTr("Sync"), icon: "cloud", color: "#32ADE6", desktop: true },
         { name: qsTr("AI"), icon: "sparkle", color: Style.purple }
     ]
 
+    // On a phone the sections are a list, and a section's page replaces it.
+    property bool showingPage: false
+
     function openAt(index) {
         section = index || 0
+        // Asked for a particular section: go straight to it, phone or not.
+        showingPage = index > 0
         error = ""
         open()
     }
@@ -101,20 +108,23 @@ TSheet {
         property string note: ""
         property bool last: false
         default property alias control: slot.data
+        // On a phone, a wide control goes under its label instead of beside it.
+        readonly property bool stacked: Style.compact && slot.childrenRect.width > width * 0.45
         Layout.fillWidth: true
-        implicitHeight: Math.max(44, texts.implicitHeight + 20, slot.childrenRect.height + 16)
+        implicitHeight: stacked ? texts.implicitHeight + slot.childrenRect.height + 30
+                                : Math.max(Style.touch ? 52 : 44, texts.implicitHeight + 20, slot.childrenRect.height + 16)
 
         ColumnLayout {
             id: texts
-            anchors.left: parent.left
-            anchors.leftMargin: 14
-            anchors.right: slot.left
-            anchors.rightMargin: 16
-            anchors.verticalCenter: parent.verticalCenter
+            x: 14
+            y: settingRow.stacked ? 12 : (settingRow.height - height) / 2
+            width: settingRow.stacked ? settingRow.width - 28 : settingRow.width - 14 - slot.width - 28
             spacing: 2
             Text {
                 Layout.fillWidth: true
                 text: settingRow.label
+                wrapMode: Text.Wrap
+                maximumLineCount: 2
                 elide: Text.ElideRight
                 font.family: Style.fontFamily
                 font.pixelSize: Style.fontSize
@@ -125,7 +135,7 @@ TSheet {
                 Layout.fillWidth: true
                 text: settingRow.note
                 wrapMode: Text.Wrap
-                maximumLineCount: 2
+                maximumLineCount: settingRow.stacked ? 4 : 2
                 elide: Text.ElideRight
                 font.family: Style.fontFamily
                 font.pixelSize: Style.smallFontSize
@@ -134,9 +144,8 @@ TSheet {
         }
         Item {
             id: slot
-            anchors.right: parent.right
-            anchors.rightMargin: 12
-            anchors.verticalCenter: parent.verticalCenter
+            x: settingRow.stacked ? 14 : settingRow.width - width - 12
+            y: settingRow.stacked ? texts.y + texts.height + 10 : (settingRow.height - height) / 2
             width: childrenRect.width
             height: childrenRect.height
         }
@@ -200,11 +209,13 @@ TSheet {
 
         // Sections.
         Rectangle {
-            Layout.preferredWidth: 200
+            visible: !Style.compact || !dialog.showingPage
+            Layout.preferredWidth: Style.compact ? -1 : 200
+            Layout.fillWidth: Style.compact
             Layout.fillHeight: true
-            color: Qt.rgba(0, 0, 0, 0.18)
-            topLeftRadius: Style.radiusLarge
-            bottomLeftRadius: Style.radiusLarge
+            color: Style.compact ? "transparent" : Qt.rgba(0, 0, 0, 0.18)
+            topLeftRadius: dialog.fills ? 0 : Style.radiusLarge
+            bottomLeftRadius: dialog.fills ? 0 : Style.radiusLarge
 
             ColumnLayout {
                 anchors.fill: parent
@@ -228,13 +239,17 @@ TSheet {
                         id: nav
                         required property int index
                         required property var modelData
+                        visible: !(Style.touch && modelData.desktop)
                         Layout.fillWidth: true
                         topPadding: 5
                         bottomPadding: 5
                         leftPadding: 6
                         rightPadding: 6
                         hoverEnabled: true
-                        onClicked: dialog.section = index
+                        onClicked: {
+                            dialog.section = index
+                            dialog.showingPage = true
+                        }
                         background: Rectangle {
                             radius: 7
                             color: dialog.section === nav.index ? Style.accent
@@ -277,10 +292,36 @@ TSheet {
         }
 
         Rectangle {
+            visible: !Style.compact
             Layout.fillHeight: true
             implicitWidth: 1
             color: Style.separator
         }
+
+        ColumnLayout {
+            visible: !Style.compact || dialog.showingPage
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            spacing: 0
+
+            // Back to the list of sections, on a phone.
+            RowLayout {
+                visible: Style.compact
+                Layout.fillWidth: true
+                Layout.margins: 8
+                TButton {
+                    kind: "plain"
+                    leftPadding: 4
+                    text: qsTr("‹ Settings")
+                    onClicked: dialog.showingPage = false
+                }
+                Item { Layout.fillWidth: true }
+                TButton {
+                    kind: "plain"
+                    text: qsTr("Done")
+                    onClicked: dialog.close()
+                }
+            }
 
         StackLayout {
             Layout.fillWidth: true
@@ -359,6 +400,7 @@ TSheet {
                 }
 
                 Group {
+                    visible: !Style.touch
                     Row_ {
                         label: qsTr("Keyboard shortcuts")
                         TButton {
@@ -773,8 +815,9 @@ TSheet {
                 Group {
                     visible: !backend.keyringAvailable
                     Row_ {
-                        label: qsTr("No keyring found")
-                        note: qsTr("Saving passwords needs secret-tool (the libsecret package) and a keyring such as GNOME Keyring or KeePassXC. Logins without passwords still work.")
+                        label: Style.touch ? qsTr("Passwords aren't saved here yet") : qsTr("No keyring found")
+                        note: Style.touch ? qsTr("ssh asks for the password when you connect. Logins with a user and key file work.")
+                                          : qsTr("Saving passwords needs secret-tool (the libsecret package) and a keyring such as GNOME Keyring or KeePassXC. Logins without passwords still work.")
                         last: true
                         Item { width: 1; height: 1 }
                     }
@@ -922,6 +965,7 @@ TSheet {
                 }
 
                 Group {
+                    visible: !Style.touch
                     title: qsTr("Claude subscription (Pro or Max)")
                     footnote: qsTr("Tether asks your own Claude Code, which signs in with your Claude account, so answers count toward your plan's usage instead of an API bill.")
                     Row_ {
@@ -981,6 +1025,7 @@ TSheet {
                     }
                 }
             }
+        }
         }
     }
 

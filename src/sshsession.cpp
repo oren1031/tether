@@ -140,13 +140,22 @@ void SshSession::say(const QString &text) {
 
 QString SshSession::ask(const QString &prompt, bool echo) {
     say(prompt);
+    // A secret: the keyboard switches to password mode (no suggestions,
+    // capitals, or added spaces), and each character shows as a star.
+    if (!echo)
+        emit secretInput(true);
+    auto done = [&](const QString &answer) {
+        if (!echo)
+            emit secretInput(false);
+        return answer;
+    };
     QByteArray line;
     while (!m_stopping) {
         const QByteArray input = takeInput();
         for (const char c : input) {
             if (c == '\r' || c == '\n') {
                 say("\n");
-                return QString::fromUtf8(line);
+                return done(QString::fromUtf8(line));
             }
             if (c == 0x7f || c == 0x08) {
                 if (!line.isEmpty()) {
@@ -155,25 +164,26 @@ QString SshSession::ask(const QString &prompt, bool echo) {
                     while (cut > 0 && (uchar(line[cut]) & 0xC0) == 0x80)
                         --cut;
                     line.truncate(cut);
-                    if (echo)
-                        emit dataReceived("\b \b");
+                    emit dataReceived("\b \b");
                 }
                 continue;
             }
             if (c == 0x03) { // Ctrl+C gives up
                 say("^C\n");
                 m_stopping = true;
-                return {};
+                return done({});
             }
             if (uchar(c) < 0x20)
                 continue;
             line += c;
             if (echo)
                 emit dataReceived(QByteArray(1, c));
+            else if ((uchar(c) & 0xC0) != 0x80) // one star per character
+                emit dataReceived("*");
         }
         msleep(20);
     }
-    return {};
+    return done({});
 }
 
 void SshSession::run() {

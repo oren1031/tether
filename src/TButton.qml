@@ -12,8 +12,8 @@ Button {
 
     readonly property bool filled: kind === "primary" || kind === "danger"
 
-    implicitHeight: kind === "toolbar" ? 28 : Style.controlHeight
-    implicitWidth: kind === "toolbar" && !text ? 28
+    implicitHeight: kind === "toolbar" ? Style.toolbarButton : Style.controlHeight
+    implicitWidth: kind === "toolbar" && !text ? Style.toolbarButton
                  : Math.max(kind === "plain" ? 0 : 76, implicitContentWidth + leftPadding + rightPadding)
     leftPadding: kind === "toolbar" ? 6 : 14
     rightPadding: kind === "toolbar" ? 6 : 14

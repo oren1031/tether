@@ -7,8 +7,9 @@ import Tether
 // keys, so Tether's own use Ctrl+Shift, or Alt for moving between panes.
 TSheet {
     id: dialog
-    width: Math.min(560, Overlay.overlay ? Overlay.overlay.width - 40 : 560)
-    height: Math.min(660, Overlay.overlay ? Overlay.overlay.height - 40 : 660)
+    large: true
+    width: preferredWidth(560)
+    height: preferredHeight(660)
     title: qsTr("Keyboard shortcuts")
     padding: 0
 
