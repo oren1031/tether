@@ -26,9 +26,12 @@ public:
     void resize(int columns, int rows);
     void stop();
 
-    // Exit codes: the remote program's own, or 255 when the connection
-    // fails or drops, as the ssh program does.
+    // Exit codes: the remote program's own; 255 when the connection fails
+    // or drops, which the pane reconnects from; 254 when logging in was
+    // refused (a host key turned down, a wrong password), which it doesn't,
+    // so the same question isn't asked again and again.
     static constexpr int ConnectionFailed = 255;
+    static constexpr int LoginRefused = 254;
 
 signals:
     void dataReceived(const QByteArray &data);

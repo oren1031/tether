@@ -117,7 +117,7 @@ void SshSession::run() {
     Session s;
     if (!s.session) {
         say("tether: libssh couldn't start.\n");
-        emit finished(ConnectionFailed);
+        emit finished(LoginRefused);
         return;
     }
     const QString host = m_settings.value("host").toString();
@@ -126,7 +126,7 @@ void SshSession::run() {
     if (user.isEmpty()) {
         user = ask("login as: ", true).trimmed();
         if (user.isEmpty() || m_stopping) {
-            emit finished(ConnectionFailed);
+            emit finished(LoginRefused);
             return;
         }
     }
@@ -182,7 +182,7 @@ void SshSession::run() {
                         "Someone could be intercepting the connection. If the server was\n"
                         "reinstalled, remove its old key from %4 and connect again.\n")
                     .arg(type, host, fingerprint, knownHosts));
-            emit finished(ConnectionFailed);
+            emit finished(LoginRefused);
             return;
         case SSH_KNOWN_HOSTS_NOT_FOUND:
         case SSH_KNOWN_HOSTS_UNKNOWN: {
@@ -192,7 +192,7 @@ void SshSession::run() {
                                            .arg(host, type.toUpper(), fingerprint), true).trimmed().toLower();
             if (answer != "yes" && answer != "y") {
                 say("Host key verification failed.\n");
-                emit finished(ConnectionFailed);
+                emit finished(LoginRefused);
                 return;
             }
             if (ssh_session_update_known_hosts(s.session) == SSH_OK)
@@ -201,7 +201,7 @@ void SshSession::run() {
         }
         default:
             say(QString("ssh: couldn't check the host key: %1\n").arg(QString::fromUtf8(ssh_get_error(s.session))));
-            emit finished(ConnectionFailed);
+            emit finished(LoginRefused);
             return;
         }
     }
@@ -267,7 +267,7 @@ void SshSession::run() {
     if (!authenticated) {
         if (!m_stopping)
             say(QString("%1@%2: Permission denied.\n").arg(user, host));
-        emit finished(ConnectionFailed);
+        emit finished(LoginRefused);
         return;
     }
 

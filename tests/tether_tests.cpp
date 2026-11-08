@@ -7,6 +7,7 @@
 #include <QStandardPaths>
 #include <QScopeGuard>
 #include <QProcess>
+#include <QInputMethodEvent>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -96,6 +97,36 @@ private slots:
         backend.setTool("picocom", "");
         p["baud"] = 9600;
         QVERIFY(backend.launch(p).value("error").toString().contains("picocom"));
+    }
+
+    void touchKeyboardTextReachesTheProgram()
+    {
+#ifndef Q_OS_WIN
+        // Gboard's way: a word grows as composing text, gets corrected, and is
+        // committed later; then Enter. Each letter must reach the program.
+        TerminalView view;
+        view.setSize(QSizeF(800, 400));
+        QSignalSpy done(&view, &TerminalView::finished);
+        QVERIFY(view.start("/bin/sh", {"-c", "stty -echo; read a; echo \"got:$a\""}));
+        QTest::qWait(300);
+        auto compose = [&](const QString &preedit, const QString &commit = {}) {
+            QInputMethodEvent event(preedit, {});
+            if (!commit.isNull())
+                event.setCommitString(commit);
+            QCoreApplication::sendEvent(&view, &event);
+        };
+        compose("y");
+        compose("ye");
+        compose("yes");
+        compose("yez");          // the keyboard changes its mind
+        compose("yes");
+        compose("", "yes");      // committed, nothing more to type
+        compose("x");            // a new word, then deleted by the keyboard
+        compose("");
+        view.sendKey("enter");
+        QVERIFY(done.wait(5000));
+        QVERIFY2(view.screenText(10).contains("got:yes"), qPrintable(view.screenText(10)));
+#endif
     }
 
     void loggedSessionsGetALogFile()

@@ -821,6 +821,7 @@ VTermModifier TerminalView::modifiers(Qt::KeyboardModifiers m) const {
 }
 
 void TerminalView::keyPressEvent(QKeyEvent *event) {
+    m_composing.clear();
     const VTermModifier mod = modifiers(event->modifiers());
     const bool keypad = event->modifiers() & Qt::KeypadModifier;
 
@@ -912,24 +913,41 @@ void TerminalView::keyPressEvent(QKeyEvent *event) {
     event->ignore();
 }
 
+void TerminalView::typeCharacters(const QString &text) {
+    for (const char32_t c : text.toUcs4()) {
+        // Touch keyboards send Enter as a newline character.
+        if (c == '\n') {
+            vterm_keyboard_key(m_vt, VTERM_KEY_ENTER, takeSticky());
+            continue;
+        }
+        uint32_t ch = uint32_t(c);
+        const VTermModifier mod = takeSticky();
+        if ((mod & VTERM_MOD_CTRL) && ch >= 'A' && ch <= 'Z')
+            ch += 32;
+        vterm_keyboard_unichar(m_vt, ch, mod);
+    }
+}
+
+// Touch keyboards like Gboard hold a word as "composing" text and commit it
+// later, at a space or Enter. A terminal can't wait for that: a password or
+// "yes" would never arrive. So composing text is typed as it grows, and when
+// the keyboard changes it, backspaces take back what differs.
 void TerminalView::inputMethodEvent(QInputMethodEvent *event) {
-    const QString text = event->commitString();
-    if (!text.isEmpty()) {
+    const QString target = event->commitString() + event->preeditString();
+    int common = 0;
+    while (common < m_composing.size() && common < target.size() && m_composing.at(common) == target.at(common))
+        ++common;
+    const int erase = int(m_composing.mid(common).toUcs4().size());
+    const QString add = target.mid(common);
+    if (erase > 0 || !add.isEmpty()) {
         clearSelection();
         scrollToBottom();
-        for (const char32_t c : text.toUcs4()) {
-            // Touch keyboards send Enter as a newline character.
-            if (c == '\n') {
-                vterm_keyboard_key(m_vt, VTERM_KEY_ENTER, takeSticky());
-                continue;
-            }
-            uint32_t ch = uint32_t(c);
-            const VTermModifier mod = takeSticky();
-            if ((mod & VTERM_MOD_CTRL) && ch >= 'A' && ch <= 'Z')
-                ch += 32;
-            vterm_keyboard_unichar(m_vt, ch, mod);
-        }
+        for (int i = 0; i < erase; ++i)
+            vterm_keyboard_key(m_vt, VTERM_KEY_BACKSPACE, VTERM_MOD_NONE);
+        typeCharacters(add);
     }
+    // What's committed is final; only the composing part may still change.
+    m_composing = event->preeditString();
     event->accept();
 }
 
@@ -941,6 +959,15 @@ QVariant TerminalView::inputMethodQuery(Qt::InputMethodQuery query) const {
         return QRectF(m_cursor.col * m_cellWidth, m_cursor.row * m_cellHeight, m_cellWidth, m_cellHeight);
     case Qt::ImFont:
         return m_font;
+    // Keyboards ask what surrounds the cursor; the word being composed is all
+    // they can edit, since what's sent is out of their hands.
+    case Qt::ImSurroundingText:
+        return m_composing;
+    case Qt::ImCursorPosition:
+    case Qt::ImAnchorPosition:
+        return int(m_composing.size());
+    case Qt::ImCurrentSelection:
+        return QString();
     case Qt::ImHints:
         // Sensitive data keeps touch keyboards from holding words back for
         // suggestions, so each letter reaches the terminal as it's typed.
@@ -960,6 +987,7 @@ void TerminalView::focusInEvent(QFocusEvent *event) {
 }
 
 void TerminalView::focusOutEvent(QFocusEvent *event) {
+    m_composing.clear();
     QQuickPaintedItem::focusOutEvent(event);
     vterm_state_focus_out(vterm_obtain_state(m_vt));
     m_blinkTimer.stop();

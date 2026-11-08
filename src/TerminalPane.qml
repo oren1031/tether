@@ -269,7 +269,7 @@ FocusScope {
                 spacing: 4
                 Repeater {
                     model: [
-                        { label: "Esc", key: "esc" }, { label: "Tab", key: "tab" },
+                        { label: "Esc", key: "esc" }, { label: "⏎", key: "enter" }, { label: "Tab", key: "tab" },
                         { label: "Ctrl", sticky: "ctrl" }, { label: "Alt", sticky: "alt" },
                         { label: "←", key: "left" }, { label: "↓", key: "down" }, { label: "↑", key: "up" },
                         { label: "→", key: "right" }, { label: "|", text: "|" }, { label: "/", text: "/" },

@@ -9,6 +9,7 @@
 #include <QImage>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QInputMethodEvent>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QStandardPaths>
@@ -160,7 +161,15 @@ int finishSelfTest(QQmlApplicationEngine &engine, const QStringList &arguments) 
         QObject::connect(&watch, &QTimer::timeout, &loop, [&] {
             if (!answered && view.screenText(20).contains("continue connecting")) {
                 answered = true;
-                view.sendText("yes\r");
+                // Typed the way a phone keyboard types: composing, then committed.
+                for (const QString &preedit : {QString("y"), QString("ye"), QString("yes")}) {
+                    QInputMethodEvent composing(preedit, {});
+                    QCoreApplication::sendEvent(&view, &composing);
+                }
+                QInputMethodEvent commit;
+                commit.setCommitString("yes");
+                QCoreApplication::sendEvent(&view, &commit);
+                view.sendKey("enter");
             }
         });
         watch.start();

@@ -205,6 +205,8 @@ private:
     bool m_stickyCtrl = false;
     bool m_stickyAlt = false;
     VTermModifier takeSticky();
+    void typeCharacters(const QString &text);
+    QString m_composing;  // composing text from a touch keyboard, already typed
     int m_selectUnit = 0; // 0 characters, 1 words, 2 lines
     qint64 m_lastDoubleClick = 0;
     int m_mouseButtonsDown = 0;
