@@ -133,7 +133,7 @@ void Updater::download() {
         setState("error", tr("This release has no download for this system; get it from the release page."));
         return;
     }
-    const QString directory = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/updates";
+    const QString directory = updatesDirectory();
     QDir().mkpath(directory);
     const QString name = QFileInfo(m_asset.value("name").toString()).fileName();
     const QString target = directory + "/" + name;
@@ -181,6 +181,16 @@ QVariantMap Updater::installCommand() const {
 void Updater::restart() {
     QProcess::startDetached(QCoreApplication::applicationFilePath(), {});
     QCoreApplication::quit();
+}
+
+// Where updates download to. On Android that's the app's files folder, the
+// one Qt's file provider shares with the system installer (not the cache).
+QString Updater::updatesDirectory() {
+#ifdef Q_OS_ANDROID
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/updates";
+#else
+    return QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/updates";
+#endif
 }
 
 // Android: the APK goes to the system installer through Qt's file provider,

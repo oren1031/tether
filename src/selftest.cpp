@@ -200,7 +200,7 @@ int finishSelfTest(QQmlApplicationEngine &engine, const QStringList &arguments) 
     if (arguments.contains("--try-install")) {
         const QJniObject context = QNativeInterface::QAndroidApplication::context();
         const QString own = context.callObjectMethod("getPackageCodePath", "()Ljava/lang/String;").toString();
-        const QString directory = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/updates";
+        const QString directory = Updater::updatesDirectory();
         QDir().mkpath(directory);
         const QString copy = directory + "/self-test.apk";
         QFile::remove(copy);

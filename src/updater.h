@@ -56,6 +56,7 @@ public:
     // Android: opens the system installer on the downloaded APK.
     Q_INVOKABLE bool launchInstaller();
     static bool openAndroidInstaller(const QString &apk);
+    static QString updatesDirectory();
     // AppImage: swaps the downloaded file in for the running one and restarts.
     Q_INVOKABLE bool replaceAppImage();
 
