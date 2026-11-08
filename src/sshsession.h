@@ -25,6 +25,10 @@ public:
     void write(const QByteArray &data);
     void resize(int columns, int rows);
     void stop();
+    // The answer to hostKeyQuestion, from a dialog; typing it works too.
+    void answerHostKey(bool trust);
+    // Takes a host's entries out of a known_hosts file, for a key that changed.
+    static bool forgetHost(const QString &knownHosts, const QString &host, int port);
 
     // Exit codes: the remote program's own; 255 when the connection fails
     // or drops, which the pane reconnects from; 254 when logging in was
@@ -35,6 +39,8 @@ public:
 
 signals:
     void dataReceived(const QByteArray &data);
+    // A host key to trust or not: new, or changed since last time.
+    void hostKeyQuestion(const QString &host, const QString &keyType, const QString &fingerprint, bool changed);
     void finished(int exitCode);
 
 protected:
@@ -44,6 +50,8 @@ private:
     void say(const QString &text);
     // Asks in the terminal and waits for a line; empty when stopped.
     QString ask(const QString &prompt, bool echo);
+    // Asks yes or no in the terminal and through hostKeyQuestion.
+    bool askTrust(const QString &prompt);
     QByteArray takeInput();
 
     QVariantMap m_settings;
@@ -53,4 +61,5 @@ private:
     int m_rows;
     std::atomic<bool> m_resized{false};
     std::atomic<bool> m_stopping{false};
+    std::atomic<int> m_trust{-1};
 };

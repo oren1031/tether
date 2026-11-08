@@ -16,6 +16,9 @@ FocusScope {
     // A dropped ssh connection (exit 255) reconnects on its own, counting down.
     property int reconnectIn: 0
     property bool lostConnection: false
+    // ssh refused the server's key: reconnecting can't help until it's dealt with.
+    property bool hostKeyFailed: false
+    property bool hostKeyChanged: false
     readonly property string title: launch.title || ""
     readonly property bool active: page !== null && page.activePane === pane
     readonly property var terminal: loader.item
@@ -39,6 +42,8 @@ FocusScope {
     function restart(newLaunch) {
         ended = false
         lostConnection = false
+        hostKeyFailed = false
+        hostKeyChanged = false
         reconnectTimer.stop()
         launch = newLaunch
         loader.active = false
@@ -115,13 +120,17 @@ FocusScope {
 
             onFinished: code => {
                 pane.ended = true
-                pane.lostConnection = code === 255 && !!pane.launch.reconnect
+                const screen = screenText(40)
+                pane.hostKeyChanged = screen.indexOf("REMOTE HOST IDENTIFICATION HAS CHANGED") >= 0
+                pane.hostKeyFailed = pane.hostKeyChanged || screen.indexOf("Host key verification failed") >= 0
+                pane.lostConnection = code === 255 && !!pane.launch.reconnect && !pane.hostKeyFailed
                 if (pane.lostConnection) {
                     pane.reconnectIn = 3
                     reconnectTimer.start()
                 }
             }
             onActiveFocusChanged: if (activeFocus && pane.page) pane.page.activePane = pane
+            onHostKeyQuestion: (host, keyType, fingerprint, changed) => trustSheet.ask(host, keyType, fingerprint, changed)
 
             // A thin scroll bar for the history, shown while there is some.
             Rectangle {
@@ -192,9 +201,18 @@ FocusScope {
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 16
         width: Math.min(parent.width - 32, endRow.implicitWidth + 28)
-        height: 44
+        height: forgetError.text ? 64 : 44
         radius: 12
         color: Style.popover
+        Text {
+            id: forgetError
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 6
+            anchors.horizontalCenter: parent.horizontalCenter
+            font.family: Style.fontFamily
+            font.pixelSize: Style.smallFontSize
+            color: Style.red
+        }
         border.color: activeFocus ? Style.tint(0.8) : Qt.rgba(1, 1, 1, 0.12)
         activeFocusOnTab: true
 
@@ -214,13 +232,27 @@ FocusScope {
                 font.family: Style.fontFamily
                 font.pixelSize: 12
                 color: Style.secondaryLabel
-                text: pane.lostConnection && reconnectTimer.running
+                text: pane.hostKeyChanged ? qsTr("This server's key has changed. If you know it was reinstalled, forget the old key and connect again.")
+                      : pane.hostKeyFailed ? qsTr("The server's key wasn't trusted. Reconnect to be asked again.")
+                      : pane.lostConnection && reconnectTimer.running
                       ? qsTr("Connection lost. Reconnecting in %n seconds…", "", pane.reconnectIn)
                       : pane.lostConnection ? qsTr("Connection lost. Press Enter to reconnect, or Ctrl+Shift+W to close the pane.")
                       : qsTr("Session ended. Press Enter to reconnect, or Ctrl+Shift+W to close the pane.")
             }
             TButton {
-                kind: "primary"
+                visible: pane.hostKeyChanged
+                kind: "danger"
+                text: qsTr("Forget old key")
+                onClicked: {
+                    const error = backend.forgetHostKey(pane.launch.profile || {})
+                    if (error)
+                        forgetError.text = error
+                    else
+                        pane.reconnectRequested()
+                }
+            }
+            TButton {
+                kind: pane.hostKeyChanged ? "default" : "primary"
                 iconName: "reload"
                 iconSize: 13
                 text: qsTr("Reconnect")
@@ -318,6 +350,88 @@ FocusScope {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // The built-in ssh's host key question as a dialog, which works with any
+    // keyboard; typing yes in the terminal works too.
+    TSheet {
+        id: trustSheet
+        parent: Overlay.overlay
+        property string host
+        property string keyType
+        property string fingerprint
+        property bool changed: false
+        property bool answered: false
+        width: Math.min(460, Overlay.overlay ? Overlay.overlay.width - 32 : 460)
+        title: changed ? qsTr("%1's key has changed").arg(host) : qsTr("Trust %1?").arg(host)
+        closePolicy: Popup.NoAutoClose
+
+        function ask(h, type, print, isChanged) {
+            host = h
+            keyType = type
+            fingerprint = print
+            changed = isChanged
+            answered = false
+            open()
+        }
+        function answer(trust) {
+            answered = true
+            if (pane.terminal)
+                pane.terminal.answerHostKey(trust)
+            close()
+        }
+        onClosed: if (!answered && pane.terminal) pane.terminal.answerHostKey(false)
+        onOpened: trustKeys.forceActiveFocus()
+
+        contentItem: ColumnLayout {
+            spacing: 10
+            // Enter trusts and Escape declines, from any keyboard.
+            Item {
+                id: trustKeys
+                focus: true
+                Keys.onReturnPressed: trustSheet.answer(true)
+                Keys.onEnterPressed: trustSheet.answer(true)
+                Keys.onEscapePressed: trustSheet.answer(false)
+            }
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                font.family: Style.fontFamily
+                font.pixelSize: Style.fontSize
+                color: trustSheet.changed ? Style.orange : Style.secondaryLabel
+                text: trustSheet.changed
+                      ? qsTr("The server answered with a different key than last time. That happens when a server is reinstalled, but it can also mean someone is intercepting the connection. Only trust the new key if you expected this.")
+                      : qsTr("This is the first connection to this server. Check that the fingerprint matches the server's, then trust it; Tether remembers it from now on.")
+            }
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: printText.implicitHeight + 20
+                radius: 8
+                color: Qt.rgba(0, 0, 0, 0.25)
+                Text {
+                    id: printText
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    wrapMode: Text.WrapAnywhere
+                    font.family: Style.monoFamily
+                    font.pixelSize: Style.smallFontSize + 1
+                    color: Style.label
+                    text: trustSheet.keyType + "\n" + trustSheet.fingerprint
+                }
+            }
+        }
+        footer: RowLayout {
+            spacing: 10
+            Item { Layout.fillWidth: true }
+            TButton { Layout.bottomMargin: 20; text: qsTr("Don't connect"); onClicked: trustSheet.answer(false) }
+            TButton {
+                Layout.bottomMargin: 20
+                Layout.rightMargin: 20
+                kind: trustSheet.changed ? "danger" : "primary"
+                text: trustSheet.changed ? qsTr("Trust the new key") : qsTr("Trust and connect")
+                onClicked: trustSheet.answer(true)
             }
         }
     }

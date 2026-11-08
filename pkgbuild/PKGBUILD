@@ -1,5 +1,5 @@
 pkgname=tether
-pkgver=0.4.1
+pkgver=0.4.2
 pkgrel=1
 pkgdesc='SSH hosts and serial ports in tabs and split panes'
 arch=('x86_64' 'aarch64')

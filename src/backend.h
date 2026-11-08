@@ -57,6 +57,8 @@ public:
     Q_INVOKABLE QString removeIdentity(const QString &id);
     // A private key picked in a file dialog, as a path ssh can use: path or error.
     Q_INVOKABLE QVariantMap importKey(const QUrl &url);
+    // Removes a host's saved key, after the server's key changed: empty or an error.
+    Q_INVOKABLE QString forgetHostKey(const QVariantMap &profile) const;
 #ifdef Q_OS_WIN
     bool keyringAvailable() const { return true; } // Windows Credential Manager
 #else

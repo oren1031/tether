@@ -74,6 +74,8 @@ public:
     // An ssh connection Tether makes itself (libssh), where there's no ssh
     // program: host, port, user, identityFile, password, command, knownHosts.
     Q_INVOKABLE bool startSsh(const QVariantMap &settings);
+    // Answers the built-in ssh's hostKeyQuestion.
+    Q_INVOKABLE void answerHostKey(bool trust);
     Q_INVOKABLE void terminate();
     // Types text as if pasted from the keyboard, without bracketed paste:
     // snippets use it, and \r presses Enter.
@@ -110,6 +112,7 @@ signals:
     void finished(int exitCode);
     void bell();
     void stickyChanged();
+    void hostKeyQuestion(const QString &host, const QString &keyType, const QString &fingerprint, bool changed);
 
 protected:
     void geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) override;

@@ -2,6 +2,9 @@
 
 #include "serialports.h"
 #include "credentials.h"
+#ifdef TETHER_LIBSSH
+#include "sshsession.h"
+#endif
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -505,6 +508,30 @@ QVariantMap Backend::importKey(const QUrl &url) {
     const QString home = QDir::homePath();
     return {{"path", path.startsWith(home + "/") ? "~" + path.mid(home.size()) : path}};
 #endif
+}
+
+QString Backend::forgetHostKey(const QVariantMap &profile) const {
+    const QVariantMap p = clean(profile);
+    const QString host = p["host"].toString();
+    const int port = p["port"].toInt();
+    if (host.isEmpty() || !hostPattern.match(host).hasMatch())
+        return tr("No host to forget.");
+#ifdef TETHER_LIBSSH
+    if (tool("ssh").isEmpty()) {
+        const QString file = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/known_hosts";
+        return SshSession::forgetHost(file, host, port) ? QString() : tr("There was no saved key for %1.").arg(host);
+    }
+#endif
+    // ssh-keygen knows hashed known_hosts lines too.
+    const QString keygen = tool("ssh-keygen");
+    if (keygen.isEmpty())
+        return tr("ssh-keygen isn't installed.");
+    QProcess process;
+    process.start(keygen, {"-R", port == 22 ? host : QString("[%1]:%2").arg(host).arg(port)});
+    process.closeWriteChannel();
+    if (!process.waitForFinished(10000) || process.exitCode() != 0)
+        return tr("Couldn't remove the old key: %1").arg(QString::fromUtf8(process.readAllStandardError()).trimmed());
+    return {};
 }
 
 QString Backend::newLogPath(const QString &title) const {

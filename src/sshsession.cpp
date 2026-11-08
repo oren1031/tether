@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QMutexLocker>
+#include <QSaveFile>
 
 #include <libssh/libssh.h>
 
@@ -61,6 +62,68 @@ void SshSession::resize(int columns, int rows) {
 }
 
 void SshSession::stop() { m_stopping = true; }
+
+void SshSession::answerHostKey(bool trust) { m_trust = trust ? 1 : 0; }
+
+bool SshSession::askTrust(const QString &prompt) {
+    say(prompt);
+    QByteArray line;
+    while (!m_stopping) {
+        const int decided = m_trust.exchange(-1);
+        if (decided >= 0) {
+            say(decided ? "yes\n" : "no\n");
+            return decided == 1;
+        }
+        for (const char c : takeInput()) {
+            if (c == '\r' || c == '\n') {
+                say("\n");
+                // "yes", "Yes", "y", "yes." from a phone keyboard all mean yes.
+                const QString answer = QString::fromUtf8(line).trimmed().toLower();
+                return answer.startsWith('y');
+            }
+            if (c == 0x7f || c == 0x08) {
+                if (!line.isEmpty()) {
+                    line.chop(1);
+                    emit dataReceived("\b \b");
+                }
+                continue;
+            }
+            if (c == 0x03) {
+                say("^C\n");
+                return false;
+            }
+            if (uchar(c) >= 0x20) {
+                line += c;
+                emit dataReceived(QByteArray(1, c));
+            }
+        }
+        msleep(20);
+    }
+    return false;
+}
+
+bool SshSession::forgetHost(const QString &knownHosts, const QString &host, int port) {
+    QFile file(knownHosts);
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    const QString name = port == 22 ? host : QString("[%1]:%2").arg(host).arg(port);
+    QByteArray kept;
+    bool removed = false;
+    for (const QByteArray &line : file.readAll().split('\n')) {
+        const QList<QByteArray> hosts = line.trimmed().split(' ').value(0).split(',');
+        if (hosts.contains(name.toUtf8())) {
+            removed = true;
+            continue;
+        }
+        if (!line.isEmpty())
+            kept += line + '\n';
+    }
+    file.close();
+    if (!removed)
+        return false;
+    QSaveFile out(knownHosts);
+    return out.open(QIODevice::WriteOnly) && out.write(kept) == kept.size() && out.commit();
+}
 
 QByteArray SshSession::takeInput() {
     QMutexLocker lock(&m_mutex);
@@ -174,29 +237,42 @@ void SshSession::run() {
         case SSH_KNOWN_HOSTS_OK:
             break;
         case SSH_KNOWN_HOSTS_CHANGED:
-        case SSH_KNOWN_HOSTS_OTHER:
-            say(QString("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"
-                        "@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n"
-                        "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"
-                        "The %1 host key for %2 is now %3.\n"
-                        "Someone could be intercepting the connection. If the server was\n"
-                        "reinstalled, remove its old key from %4 and connect again.\n")
-                    .arg(type, host, fingerprint, knownHosts));
-            emit finished(LoginRefused);
-            return;
+        case SSH_KNOWN_HOSTS_OTHER: {
+            emit hostKeyQuestion(host, type.toUpper(), fingerprint, true);
+            const bool trust = askTrust(QString(
+                "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"
+                "@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n"
+                "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"
+                "The %1 host key for %2 is now %3.\n"
+                "Someone could be intercepting the connection; only go on if you know\n"
+                "the server was reinstalled or replaced.\n"
+                "Forget the old key and trust the new one (yes/no)? ").arg(type.toUpper(), host, fingerprint));
+            if (!trust) {
+                say("Host key verification failed.\n");
+                emit finished(LoginRefused);
+                return;
+            }
+            forgetHost(knownHosts, host, port);
+            if (ssh_session_update_known_hosts(s.session) == SSH_OK)
+                say(QString("Warning: Replaced the key for '%1' (%2) in the list of known hosts.\n").arg(host, type.toUpper()));
+            break;
+        }
         case SSH_KNOWN_HOSTS_NOT_FOUND:
         case SSH_KNOWN_HOSTS_UNKNOWN: {
-            const QString answer = ask(QString("The authenticity of host '%1' can't be established.\n"
-                                               "%2 key fingerprint is %3.\n"
-                                               "Are you sure you want to continue connecting (yes/no)? ")
-                                           .arg(host, type.toUpper(), fingerprint), true).trimmed().toLower();
-            if (answer != "yes" && answer != "y") {
+            emit hostKeyQuestion(host, type.toUpper(), fingerprint, false);
+            const bool trust = askTrust(QString("The authenticity of host '%1' can't be established.\n"
+                                                "%2 key fingerprint is %3.\n"
+                                                "Are you sure you want to continue connecting (yes/no)? ")
+                                            .arg(host, type.toUpper(), fingerprint));
+            if (!trust) {
                 say("Host key verification failed.\n");
                 emit finished(LoginRefused);
                 return;
             }
             if (ssh_session_update_known_hosts(s.session) == SSH_OK)
                 say(QString("Warning: Permanently added '%1' (%2) to the list of known hosts.\n").arg(host, type.toUpper()));
+            else
+                say(QString("Warning: couldn't save the key to %1: %2\n").arg(knownHosts, QString::fromUtf8(ssh_get_error(s.session))));
             break;
         }
         default:

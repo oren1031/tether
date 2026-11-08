@@ -16,6 +16,9 @@
 #include "backend.h"
 #include "sftp.h"
 #include "terminalview.h"
+#ifdef TETHER_LIBSSH
+#include "sshsession.h"
+#endif
 #include "updater.h"
 #include "serialports.h"
 #include "theme.h"
@@ -531,6 +534,35 @@ private slots:
         QCOMPARE(assistant.provider(), QString("auto"));
     }
 
+    void forgettingAChangedHostKey()
+    {
+        QTemporaryDir dir;
+        // A stand-in ssh-keygen that records what it was asked, so the real
+        // known_hosts isn't touched.
+        const QString fake = dir.filePath("ssh-keygen");
+        write(fake, QString("#!/bin/sh\necho \"$@\" > '%1'\n").arg(dir.filePath("args")).toUtf8());
+        QFile::setPermissions(fake, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        Backend backend(dir.filePath("tether.json"), dir.filePath("ssh_config"), dir.filePath("logs"));
+        backend.setTool("ssh", "/usr/bin/ssh");
+        backend.setTool("ssh-keygen", fake);
+        QCOMPARE(backend.forgetHostKey({{"kind", "ssh"}, {"name", "x"}, {"host", "web"}, {"port", 2222}}), QString());
+        QFile args(dir.filePath("args"));
+        QVERIFY(args.open(QIODevice::ReadOnly));
+        QCOMPARE(QString::fromUtf8(args.readAll()).trimmed(), QString("-R [web]:2222"));
+        QVERIFY(!backend.forgetHostKey({{"kind", "ssh"}, {"host", "-oX"}}).isEmpty());
+
+#ifdef TETHER_LIBSSH
+        write(dir.filePath("known_hosts"), "web ssh-ed25519 AAAA1\n[web]:2222 ssh-ed25519 AAAA2\nother ssh-ed25519 AAAA3\n");
+        QVERIFY(SshSession::forgetHost(dir.filePath("known_hosts"), "web", 2222));
+        QFile known(dir.filePath("known_hosts"));
+        QVERIFY(known.open(QIODevice::ReadOnly));
+        const QByteArray left = known.readAll();
+        QVERIFY(left.contains("web ssh-ed25519 AAAA1"));
+        QVERIFY(!left.contains("AAAA2"));
+        QVERIFY(left.contains("other"));
+#endif
+    }
+
     void hostsUseBuiltInSshWithoutTheProgram()
     {
 #ifdef TETHER_LIBSSH
@@ -607,6 +639,43 @@ private slots:
         QVERIFY(done.wait(15000));
         QVERIFY(!again.screenText(20).contains("continue connecting"));
         QVERIFY2(again.screenText(20).contains("ssh-ok-5"), qPrintable(again.screenText(20)));
+
+        // The server gets a new key: the question says so; turning it down
+        // ends without a reconnect (254), trusting it replaces the old key.
+        server.kill();
+        server.waitForFinished();
+        QFile::remove(dir.filePath("host"));
+        QFile::remove(dir.filePath("host.pub"));
+        QVERIFY(run(keygen, {"-q", "-t", "ed25519", "-N", "", "-f", dir.filePath("host")}));
+        server.start(sshd, {"-D", "-f", dir.filePath("sshd_config"), "-E", dir.filePath("sshd.log")});
+        QVERIFY(server.waitForStarted());
+        QTest::qWait(500);
+        for (const bool trust : {false, true}) {
+            TerminalView changed;
+            changed.setSize(QSizeF(900, 400));
+            QSignalSpy question(&changed, &TerminalView::hostKeyQuestion);
+            QSignalSpy ended(&changed, &TerminalView::finished);
+            QVERIFY(changed.startSsh(settings));
+            QVERIFY(question.wait(10000));
+            QVERIFY(question.first().at(3).toBool()); // changed
+            changed.answerHostKey(trust);              // as the dialog does
+            QVERIFY(ended.wait(15000));
+            if (!trust) {
+                QCOMPARE(ended.first().first().toInt(), 254);
+                QVERIFY(changed.screenText(30).contains("Host key verification failed"));
+            } else {
+                QVERIFY2(changed.screenText(30).contains("ssh-ok-5"), qPrintable(changed.screenText(30)));
+            }
+        }
+        // And from then on the new key is simply known.
+        TerminalView after;
+        after.setSize(QSizeF(900, 400));
+        QSignalSpy afterDone(&after, &TerminalView::finished);
+        QSignalSpy afterQuestion(&after, &TerminalView::hostKeyQuestion);
+        QVERIFY(after.startSsh(settings));
+        QVERIFY(afterDone.wait(15000));
+        QCOMPARE(afterQuestion.count(), 0);
+        QCOMPARE(afterDone.first().first().toInt(), 5);
 #else
         QSKIP("Built without libssh.");
 #endif

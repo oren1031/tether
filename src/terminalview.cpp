@@ -277,6 +277,7 @@ bool TerminalView::startSsh(const QVariantMap &settings) {
         }
         feed(data);
     }, Qt::QueuedConnection);
+    connect(m_ssh, &SshSession::hostKeyQuestion, this, &TerminalView::hostKeyQuestion, Qt::QueuedConnection);
     connect(m_ssh, &SshSession::finished, this, [this](int code) {
         m_sshRunning = false;
         emit runningChanged();
@@ -291,6 +292,15 @@ bool TerminalView::startSsh(const QVariantMap &settings) {
     feed(("\r\n" + tr("This build can't make ssh connections itself.") + "\r\n").toUtf8());
     emit finished(255);
     return false;
+#endif
+}
+
+void TerminalView::answerHostKey(bool trust) {
+#ifdef TETHER_LIBSSH
+    if (m_ssh)
+        m_ssh->answerHostKey(trust);
+#else
+    Q_UNUSED(trust)
 #endif
 }
 
