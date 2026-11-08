@@ -37,12 +37,20 @@ adb logcat -d | grep -E "qrc:/|FATAL EXCEPTION|AndroidRuntime" | head -30 || tru
 adb logcat -c
 adb shell am force-stop "$pkg"
 adb shell am start -W -n "$pkg/$activity" --es applicationArguments "'--self-test --try-install'"
+installer_seen=
 i=0
-while [ $i -lt 40 ] && ! adb logcat -d | grep -q "SELF-TEST \(PASSED\|FAILED\)"; do sleep 2; i=$((i + 1)); done
+while [ $i -lt 45 ]; do
+    if adb shell dumpsys activity activities | grep -iE "ResumedActivity" | grep -qi "packageinstaller"; then
+        installer_seen=1
+        sleep 2
+        adb exec-out screencap -p > "${shot%.png}-installer.png"
+        break
+    fi
+    sleep 1
+    i=$((i + 1))
+done
 adb logcat -d | grep "tether-self-test:" | grep -i "install" | sed 's/.*tether-self-test: //' || true
-sleep 4
-adb exec-out screencap -p > "${shot%.png}-installer.png"
-if adb shell dumpsys activity activities | grep -iE "ResumedActivity" | grep -qi "packageinstaller"; then
+if [ -n "$installer_seen" ]; then
     echo "ok   Android's installer opened on the update"
 else
     echo "FAIL Android's installer didn't open"

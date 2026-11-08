@@ -662,7 +662,8 @@ private slots:
             compose("phr"); compose("phrr"); compose("phr"); compose("phrase");
             compose("", "phrase");
             // The prompt and stars may wrap onto two lines, depending on the font.
-            QTRY_VERIFY_WITH_TIMEOUT(phone.screenText(10).remove('\n').contains("***********"), 3000);
+            QTRY_VERIFY2_WITH_TIMEOUT(phone.screenText(10).remove('\n').contains("***********"),
+                                      qPrintable(phone.screenText(10)), 3000);
             QVERIFY(!phone.screenText(10).contains("pass phrase"));
             phone.sendKey("enter");
             QVERIFY(ended.wait(15000));

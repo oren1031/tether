@@ -207,6 +207,12 @@ int finishSelfTest(QQmlApplicationEngine &engine, const QStringList &arguments) 
         const bool copied = QFile::copy(own, copy);
         report(copied, "download an update where the installer can read it", copy);
         report(copied && Updater::openAndroidInstaller(copy), "hand it to Android's installer");
+        // Stay open a moment, as Tether does when updating, so the emulator
+        // test sees the installer over it.
+        QElapsedTimer stay;
+        stay.start();
+        while (stay.elapsed() < 12000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
     }
 #endif
 
