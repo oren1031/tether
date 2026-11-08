@@ -1,7 +1,7 @@
 QT += core gui qml quick quickcontrols2 network svg
 
 CONFIG += c++17 release
-VERSION = 0.4.2
+VERSION = 0.5.0
 # Where updates are published: owner/repository on GitHub. Forks can set
 # the TETHER_REPO environment variable to publish their own.
 TETHER_REPO = $$(TETHER_REPO)
