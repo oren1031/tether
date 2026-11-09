@@ -1,3 +1,5 @@
 {
+  "Paste %n lines?": { "one": "Paste %n line?", "other": "Paste %n lines?" },
+  "Sync wants to change %n items": { "one": "Sync wants to change %n item", "other": "Sync wants to change %n items" },
   "Close %n sessions and quit?": { "one": "Close %n session and quit?", "other": "Close %n sessions and quit?" }
 }

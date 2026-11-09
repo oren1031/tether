@@ -710,10 +710,18 @@ TSheet {
                     }
                     Row_ {
                         label: qsTr("Dim panes that aren't focused")
-                        last: true
                         TSwitch {
                             checked: backend.settings.paneDimming
                             onToggled: dialog.set("paneDimming", checked)
+                        }
+                    }
+                    Row_ {
+                        label: qsTr("Ask before pasting several lines")
+                        note: qsTr("When the program would run each line as it's pasted.")
+                        last: true
+                        TSwitch {
+                            checked: backend.settings.confirmPaste
+                            onToggled: dialog.set("confirmPaste", checked)
                         }
                     }
                 }

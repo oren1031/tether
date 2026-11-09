@@ -8,10 +8,14 @@
 #include <QScopeGuard>
 #include <QProcess>
 #include <QElapsedTimer>
+#include <QClipboard>
+#include <QGuiApplication>
 #include <QInputMethodEvent>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
+
+#include <memory>
 
 #include "assistant.h"
 #include "backend.h"
@@ -171,6 +175,70 @@ private slots:
         view.sendKey("enter");
         QVERIFY(done.wait(5000));
         QVERIFY2(view.screenText(10).contains("got:yes"), qPrintable(view.screenText(10)));
+#endif
+    }
+
+    void pastedTextIsCleanedAndSeveralLinesAreAskedAbout()
+    {
+        // Escape and the other control characters never reach the program:
+        // text copied from a web page can't close the bracketed paste early
+        // (ESC [ 201 ~) or send the terminal commands. Tab and Enter stay.
+        QCOMPARE(TerminalView::cleanPaste(QString::fromUtf8("ls\x1b[201~\nrm -rf ~\r\n\tdone\x07\x7f\xc2\x9b" "31m é")),
+                 QString::fromUtf8("ls[201~\rrm -rf ~\r\tdone31m é"));
+#ifndef Q_OS_WIN
+        QClipboard *clipboard = QGuiApplication::clipboard();
+        TerminalView view;
+        view.setSize(QSizeF(800, 400));
+        QSignalSpy question(&view, &TerminalView::pasteQuestion);
+        QVERIFY(view.start("/bin/sh", {"-c", "stty -echo; while read line; do echo \"got:$line\"; done"}));
+        QTest::qWait(300);
+        // One line without Enter: typed as it is, to be looked at.
+        clipboard->setText("echo one");
+        view.pasteClipboard();
+        QCOMPARE(question.count(), 0);
+        view.sendKey("enter");
+        QTRY_VERIFY2_WITH_TIMEOUT(view.screenText(10).contains("got:echo one"), qPrintable(view.screenText(10)), 5000);
+        // Several lines would each run as they land: asked first, nothing sent.
+        clipboard->setText("first\nsecond\x1b[201~\n");
+        view.pasteClipboard();
+        QCOMPARE(question.count(), 1);
+        QCOMPARE(question.first().at(0).toString(), QString("first\rsecond[201~\r"));
+        QCOMPARE(question.first().at(1).toInt(), 2);
+        QTest::qWait(300);
+        QVERIFY(!view.screenText(10).contains("got:first"));
+        // The answer is yes.
+        view.paste(question.first().at(0).toString());
+        QTRY_VERIFY2_WITH_TIMEOUT(view.screenText(10).contains("got:second[201~"), qPrintable(view.screenText(10)), 5000);
+        QVERIFY(view.screenText(10).contains("got:first"));
+        // A program that asked for bracketed paste shows the lines itself.
+        view.feed("\x1b[?2004h");
+        clipboard->setText("third\nfourth");
+        view.pasteClipboard();
+        QCOMPARE(question.count(), 1);
+        view.feed("\x1b[?2004l");
+        // A touch keyboard's own clipboard pastes by committing the text
+        // whole: several lines at once are a paste too, asked about and
+        // cleaned; a word and its Enter are still just typing.
+        auto commit = [&](const QString &text) {
+            QInputMethodEvent event;
+            event.setCommitString(text);
+            QCoreApplication::sendEvent(&view, &event);
+        };
+        view.sendKey("enter"); // ends the line the last paste left open
+        commit(QString::fromUtf8("seventh\neighth\x1b[201~\n"));
+        QCOMPARE(question.count(), 2);
+        QCOMPARE(question.last().at(0).toString(), QString("seventh\reighth[201~\r"));
+        QTest::qWait(300);
+        QVERIFY(!view.screenText(10).contains("got:seventh"));
+        commit(QString::fromUtf8("typed\x1b\n"));
+        QCOMPARE(question.count(), 2);
+        QTRY_VERIFY2_WITH_TIMEOUT(view.screenText(10).contains("got:typed"), qPrintable(view.screenText(10)), 5000);
+        // And the question can be turned off in Settings.
+        view.setConfirmPaste(false);
+        clipboard->setText("fifth\nsixth\n");
+        view.pasteClipboard();
+        QCOMPARE(question.count(), 2);
+        QTRY_VERIFY2_WITH_TIMEOUT(view.screenText(10).contains("got:sixth"), qPrintable(view.screenText(10)), 5000);
 #endif
     }
 
@@ -497,6 +565,41 @@ private slots:
         QCOMPARE(SftpBrowser::quote("a \"b\" *.txt"), QString("\"a \\\"b\\\" \\*.txt\""));
     }
 
+    void sftpRefusesNamesWithLineBreaks()
+    {
+        // sftp reads a command per line, so the rest of such a name would be
+        // the next command, and "!…" runs a program on this computer.
+        QTemporaryDir dir;
+        const QString fake = dir.filePath("sftp");
+        write(fake, QString("#!/bin/sh\ncat >> '%1'\necho 'Remote working directory: /home/me'\n").arg(dir.filePath("batch")).toUtf8());
+        QFile::setPermissions(fake, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        SftpBrowser browser;
+        QSignalSpy busy(&browser, &SftpBrowser::busyChanged);
+        browser.start({{"program", fake}, {"args", QStringList()}});
+        QTRY_VERIFY_WITH_TIMEOUT(!browser.busy() && browser.path() == "/home/me", 5000);
+        auto batch = [&] {
+            QFile file(dir.filePath("batch"));
+            return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString();
+        };
+        const QString evil = QString("notes.txt\n!touch %1").arg(dir.filePath("ran"));
+        browser.upload({QUrl::fromLocalFile(dir.filePath(evil))});
+        QVERIFY(!browser.busy());
+        QVERIFY(!browser.error().isEmpty());
+        browser.makeFolder("a\rb");
+        browser.remove("x\n!id", false);
+        browser.rename("old", "new\n!id");
+        browser.download({"a\n!id"});
+        browser.open("sub\n!id");
+        QVERIFY(!browser.busy());
+        QVERIFY2(!batch().contains("!"), qPrintable(batch()));
+        // An ordinary name still goes through, quoted.
+        browser.makeFolder("New folder");
+        QTRY_VERIFY_WITH_TIMEOUT(batch().contains("mkdir \"New folder\""), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!browser.busy(), 5000);
+        QCOMPARE(browser.error(), QString());
+        QVERIFY(!QFile::exists(dir.filePath("ran")));
+    }
+
     void assistantAsksForOneCommand()
     {
         const QJsonObject body = QJsonDocument::fromJson(
@@ -627,6 +730,16 @@ private slots:
         QVERIFY(left.contains("web ssh-ed25519 AAAA1"));
         QVERIFY(!left.contains("AAAA2"));
         QVERIFY(left.contains("other"));
+
+        // The saved keys of a host, as fingerprints to show beside a new one.
+        write(dir.filePath("known_hosts"),
+              "web ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGlNzf+gXq5FiE2CBcdgvlgMfKFqLNDo4wnYITdFhF2Q\n"
+              "[web]:2222,alias ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGlNzf+gXq5FiE2CBcdgvlgMfKFqLNDo4wnYITdFhF2Q\n"
+              "other ssh-rsa AAAA\n# web ssh-ed25519 AAAA\n");
+        QCOMPARE(SshSession::savedFingerprints(dir.filePath("known_hosts"), "web", 22),
+                 QStringList({"SSH-ED25519 SHA256:NcNb/0mRXe5BdwnQOmYb9jlWJ4dmbhFBDB4q6/oRGoM"}));
+        QCOMPARE(SshSession::savedFingerprints(dir.filePath("known_hosts"), "web", 2222).size(), 1);
+        QVERIFY(SshSession::savedFingerprints(dir.filePath("known_hosts"), "nobody", 22).isEmpty());
 #endif
     }
 
@@ -768,7 +881,11 @@ private slots:
         server.start(sshd, {"-D", "-f", dir.filePath("sshd_config"), "-E", dir.filePath("sshd.log")});
         QVERIFY(server.waitForStarted());
         QTest::qWait(500);
-        for (const bool trust : {false, true}) {
+        // A changed key can't be agreed to by reflex: "yes" and Enter are
+        // refused, the dialog's no is no, and only the host's name, typed
+        // out (or the dialog, which asks for the same), replaces the key.
+        const QStringList answers{"yes", "", "dialog-no", "127.0.0.1", };
+        for (const QString &answer : answers) {
             TerminalView changed;
             changed.setSize(QSizeF(900, 400));
             QSignalSpy question(&changed, &TerminalView::hostKeyQuestion);
@@ -776,9 +893,18 @@ private slots:
             QVERIFY(changed.startSsh(settings));
             QVERIFY(question.wait(10000));
             QVERIFY(question.first().at(3).toBool()); // changed
-            changed.answerHostKey(trust);              // as the dialog does
+            // The key saved before, to show beside the new one.
+            const QStringList old = question.first().at(4).toStringList();
+            QCOMPARE(old.size(), 1);
+            QVERIFY2(old.first().startsWith("SSH-ED25519 SHA256:"), qPrintable(old.first()));
+            QVERIFY(!old.first().endsWith(question.first().at(2).toString()));
+            QTRY_VERIFY_WITH_TIMEOUT(changed.screenText(30).contains("type the host's name"), 5000);
+            if (answer == "dialog-no")
+                changed.answerHostKey(false);
+            else
+                changed.sendText(answer + "\r");
             QVERIFY(ended.wait(15000));
-            if (!trust) {
+            if (answer != "127.0.0.1") {
                 QCOMPARE(ended.first().first().toInt(), 254);
                 QVERIFY(changed.screenText(30).contains("Host key verification failed"));
             } else {

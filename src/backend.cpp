@@ -110,6 +110,7 @@ QVariantMap Backend::defaultSettings() {
             {"paneDimming", true},
             {"shell", ""},                // empty uses $SHELL
             {"confirmQuit", true},
+            {"confirmPaste", true},       // ask before a paste that would run several lines at once
             {"localTmux", false},         // local shells run inside tmux, so they outlive Tether
             {"shareConnections", true},   // ssh ControlMaster: one login per host for panes and files
             {"syncFolder", ""},

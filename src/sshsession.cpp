@@ -1,5 +1,6 @@
 #include "sshsession.h"
 
+#include <QCryptographicHash>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -11,8 +12,10 @@
 
 #ifndef Q_OS_WIN
 #include <cerrno>
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <unistd.h>
 #endif
 
 namespace {
@@ -48,13 +51,58 @@ struct Session {
 SshSession::SshSession(const QVariantMap &settings, QObject *parent)
     : QThread(parent), m_settings(settings),
       m_columns(qMax(2, settings.value("columns", 80).toInt())),
-      m_rows(qMax(1, settings.value("rows", 24).toInt())) {}
+      m_rows(qMax(1, settings.value("rows", 24).toInt())) {
+#ifndef Q_OS_WIN
+    if (pipe(m_wake) == 0) {
+        for (const int fd : m_wake) {
+            fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+            fcntl(fd, F_SETFD, FD_CLOEXEC);
+        }
+    } else {
+        m_wake[0] = m_wake[1] = -1;
+    }
+#endif
+}
 
 SshSession::~SshSession() {
     // A thread can't be destroyed while it runs; retire() never gets here
     // before it's done.
     stop();
     wait();
+#ifndef Q_OS_WIN
+    for (const int fd : m_wake)
+        if (fd >= 0)
+            close(fd);
+#endif
+}
+
+void SshSession::wake() {
+#ifndef Q_OS_WIN
+    const char byte = 1;
+    // A full pipe already has a wake-up waiting in it.
+    if (m_wake[1] >= 0 && ::write(m_wake[1], &byte, 1) < 0) {}
+#endif
+}
+
+// An idle session used to look for work fifty times a second, which keeps a
+// phone's processor awake; now it sleeps until the pipe or the socket has
+// something, or the time is up.
+void SshSession::waitForWork(int timeoutMs, bool watchSocket) {
+#ifndef Q_OS_WIN
+    if (m_wake[0] >= 0) {
+        // poll skips a negative descriptor.
+        struct pollfd fds[2] = {{m_wake[0], POLLIN, 0}, {watchSocket ? m_socket : -1, POLLIN, 0}};
+        poll(fds, 2, timeoutMs);
+        if (fds[0].revents & POLLIN) {
+            char sink[64];
+            while (read(m_wake[0], sink, sizeof sink) > 0) {}
+        }
+        return;
+    }
+#else
+    Q_UNUSED(watchSocket)
+#endif
+    msleep(qMin(timeoutMs, 20));
 }
 
 void SshSession::retire() {
@@ -67,8 +115,11 @@ void SshSession::retire() {
 }
 
 void SshSession::write(const QByteArray &data) {
-    QMutexLocker lock(&m_mutex);
-    m_input += data;
+    {
+        QMutexLocker lock(&m_mutex);
+        m_input += data;
+    }
+    wake();
 }
 
 void SshSession::resize(int columns, int rows) {
@@ -76,27 +127,37 @@ void SshSession::resize(int columns, int rows) {
     m_columns = qMax(2, columns);
     m_rows = qMax(1, rows);
     m_resized = true;
+    lock.unlock();
+    wake();
 }
 
-void SshSession::stop() { m_stopping = true; }
+void SshSession::stop() {
+    m_stopping = true;
+    wake();
+}
 
-void SshSession::answerHostKey(bool trust) { m_trust = trust ? 1 : 0; }
+void SshSession::answerHostKey(bool trust) {
+    m_trust = trust ? 1 : 0;
+    wake();
+}
 
-bool SshSession::askTrust(const QString &prompt) {
+bool SshSession::askTrust(const QString &prompt, const QString &mustType) {
     say(prompt);
     QByteArray line;
-    int waited = 0;
     while (!m_stopping) {
         const int decided = m_trust.exchange(-1);
         if (decided >= 0) {
-            say(decided ? "yes\n" : "no\n");
+            say(!decided ? QString("no\n") : mustType.isEmpty() ? QString("yes\n") : mustType + "\n");
             return decided == 1;
         }
         for (const char c : takeInput()) {
             if (c == '\r' || c == '\n') {
                 say("\n");
-                // "yes", "Yes", "y", "yes." from a phone keyboard all mean yes.
                 const QString answer = QString::fromUtf8(line).trimmed().toLower();
+                // A changed key takes the host's name and nothing shorter.
+                if (!mustType.isEmpty())
+                    return answer == mustType.toLower();
+                // "yes", "Yes", "y", "yes." from a phone keyboard all mean yes.
                 return answer.startsWith('y');
             }
             if (c == 0x7f || c == 0x08) {
@@ -115,8 +176,10 @@ bool SshSession::askTrust(const QString &prompt) {
                 emit dataReceived(QByteArray(1, c));
             }
         }
-        msleep(20);
-        if (++waited % 25 == 0 && linkLost())
+        // Until something is typed or answered; twice a second a dropped
+        // connection is looked for, which ends the question.
+        waitForWork(500, false);
+        if (linkLost())
             break;
     }
     return false;
@@ -164,6 +227,28 @@ bool SshSession::forgetHost(const QString &knownHosts, const QString &host, int 
     return out.open(QIODevice::WriteOnly) && out.write(kept) == kept.size() && out.commit();
 }
 
+QStringList SshSession::savedFingerprints(const QString &knownHosts, const QString &host, int port) {
+    QFile file(knownHosts);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    const QByteArray name = (port == 22 ? host : QString("[%1]:%2").arg(host).arg(port)).toUtf8();
+    QStringList prints;
+    for (const QByteArray &line : file.readAll().split('\n')) {
+        // names, key type, the key in base64
+        const QList<QByteArray> fields = line.simplified().split(' ');
+        if (fields.size() < 3 || !fields[0].split(',').contains(name))
+            continue;
+        const QByteArray key = QByteArray::fromBase64(fields[2]);
+        if (key.isEmpty())
+            continue;
+        // The same form ssh and libssh print: SHA-256 of the key, in base64 without padding.
+        prints << QString::fromLatin1(fields[1]).toUpper() + " SHA256:"
+                      + QString::fromLatin1(QCryptographicHash::hash(key, QCryptographicHash::Sha256)
+                                                .toBase64(QByteArray::OmitTrailingEquals));
+    }
+    return prints;
+}
+
 QByteArray SshSession::takeInput() {
     QMutexLocker lock(&m_mutex);
     QByteArray data;
@@ -192,7 +277,6 @@ QString SshSession::ask(const QString &prompt, bool echo) {
         return answer;
     };
     QByteArray line;
-    int waited = 0;
     while (!m_stopping) {
         const QByteArray input = takeInput();
         for (const char c : input) {
@@ -232,9 +316,10 @@ QString SshSession::ask(const QString &prompt, bool echo) {
                 emit dataReceived("*");
             }
         }
-        msleep(20);
-        // About twice a second: a dropped connection ends the question.
-        if (++waited % 25 == 0 && linkLost())
+        // Until something is typed; twice a second a dropped connection is
+        // looked for, which ends the question.
+        waitForWork(500, false);
+        if (linkLost())
             break;
     }
     return done({});
@@ -312,15 +397,23 @@ void SshSession::run() {
             break;
         case SSH_KNOWN_HOSTS_CHANGED:
         case SSH_KNOWN_HOSTS_OTHER: {
-            emit hostKeyQuestion(host, type.toUpper(), fingerprint, true);
+            // The one moment that catches an intercepted connection, so it
+            // takes more than a tap: the old and new keys side by side, and
+            // the host's name typed out to go on.
+            const QStringList old = savedFingerprints(knownHosts, host, port);
+            emit hostKeyQuestion(host, type.toUpper(), fingerprint, true, old);
             const bool trust = askTrust(QString(
                 "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"
                 "@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n"
                 "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"
-                "The %1 host key for %2 is now %3.\n"
+                "The key saved for %2 was\n  %4\n"
+                "The server now answers with\n  %1 %3\n"
                 "Someone could be intercepting the connection; only go on if you know\n"
                 "the server was reinstalled or replaced.\n"
-                "Forget the old key and trust the new one (yes/no)? ").arg(type.toUpper(), host, fingerprint));
+                "To forget the old key and trust the new one, type the host's name (%2).\n"
+                "Anything else stops here: ")
+                    .arg(type.toUpper(), host, fingerprint, old.isEmpty() ? QString("(not readable)") : old.join("\n  ")),
+                host);
             if (!trust && lost())
                 return;
             if (!trust) {
@@ -335,7 +428,7 @@ void SshSession::run() {
         }
         case SSH_KNOWN_HOSTS_NOT_FOUND:
         case SSH_KNOWN_HOSTS_UNKNOWN: {
-            emit hostKeyQuestion(host, type.toUpper(), fingerprint, false);
+            emit hostKeyQuestion(host, type.toUpper(), fingerprint, false, {});
             const bool trust = askTrust(QString("The authenticity of host '%1' can't be established.\n"
                                                 "%2 key fingerprint is %3.\n"
                                                 "Are you sure you want to continue connecting (yes/no)? ")
@@ -463,11 +556,15 @@ void SshSession::run() {
     while (!m_stopping) {
         bool active = false;
         for (int stream = 0; stream < 2; ++stream) {
-            const int got = ssh_channel_read_timeout(s.channel, buffer, sizeof buffer, stream, stream ? 0 : 20);
-            if (got > 0) {
+            // What has arrived, without waiting; in a few rounds at most, so
+            // a flood of output can't keep Ctrl+C from being sent.
+            int got = 0;
+            for (int round = 0; round < 8
+                 && (got = ssh_channel_read_nonblocking(s.channel, buffer, sizeof buffer, stream)) > 0; ++round) {
                 emit dataReceived(QByteArray(buffer, got));
                 active = true;
-            } else if (got == SSH_ERROR) {
+            }
+            if (got == SSH_ERROR) {
                 say("\nConnection to " + host + " lost.\n");
                 emit finished(ConnectionFailed);
                 return;
@@ -493,6 +590,18 @@ void SshSession::run() {
             }
             sinceKeepalive.restart();
         }
+#ifndef Q_OS_WIN
+        // A socket that reports an error at once would otherwise spin here.
+        if (!active && !ssh_is_connected(s.session)) {
+            say("\nConnection to " + host + " lost.\n");
+            emit finished(ConnectionFailed);
+            return;
+        }
+#endif
+        // Nothing to do: sleep until the server sends, something is typed,
+        // the size changes, or the next keepalive is due.
+        if (!active)
+            waitForWork(int(qBound(qint64(1), 15001 - sinceKeepalive.elapsed(), qint64(15000))), true);
     }
     // Whatever arrived just before the end.
     int got;

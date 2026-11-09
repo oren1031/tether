@@ -34,6 +34,9 @@ public:
     void answerHostKey(bool trust);
     // Takes a host's entries out of a known_hosts file, for a key that changed.
     static bool forgetHost(const QString &knownHosts, const QString &host, int port);
+    // The keys a known_hosts file has for a host, as "TYPE SHA256:…", to
+    // show beside a new key that doesn't match them.
+    static QStringList savedFingerprints(const QString &knownHosts, const QString &host, int port);
 
     // Exit codes: the remote program's own; 255 when the connection fails
     // or drops, which the pane reconnects from; 254 when logging in was
@@ -44,8 +47,10 @@ public:
 
 signals:
     void dataReceived(const QByteArray &data);
-    // A host key to trust or not: new, or changed since last time.
-    void hostKeyQuestion(const QString &host, const QString &keyType, const QString &fingerprint, bool changed);
+    // A host key to trust or not: new, or changed since last time, and then
+    // with the saved keys it would replace.
+    void hostKeyQuestion(const QString &host, const QString &keyType, const QString &fingerprint, bool changed,
+                         const QStringList &oldFingerprints);
     // A password or passphrase is being typed (true) or done (false).
     void secretInput(bool on);
     void finished(int exitCode);
@@ -57,8 +62,14 @@ private:
     void say(const QString &text);
     // Asks in the terminal and waits for a line; empty when stopped.
     QString ask(const QString &prompt, bool echo);
-    // Asks yes or no in the terminal and through hostKeyQuestion.
-    bool askTrust(const QString &prompt);
+    // Asks in the terminal and through hostKeyQuestion. A new key takes a
+    // typed "yes"; a changed one only the text in mustType (the host's
+    // name), so it can't be agreed to by reflex.
+    bool askTrust(const QString &prompt, const QString &mustType = {});
+    // The thread sleeps until there is something to do: typed input, a new
+    // size, a stop (wake), or, when asked, bytes from the server.
+    void wake();
+    void waitForWork(int timeoutMs, bool watchSocket);
     QByteArray takeInput();
     // A question can wait a long time for its answer, and the connection can
     // drop meanwhile (a phone changing networks). True once that's seen, so
@@ -74,5 +85,6 @@ private:
     std::atomic<bool> m_stopping{false};
     std::atomic<int> m_trust{-1};
     int m_socket = -1;   // the connection's socket, once there is one
+    int m_wake[2] = {-1, -1}; // a pipe written to wake the thread
     bool m_lost = false;
 };
