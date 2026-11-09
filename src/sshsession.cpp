@@ -51,8 +51,19 @@ SshSession::SshSession(const QVariantMap &settings, QObject *parent)
       m_rows(qMax(1, settings.value("rows", 24).toInt())) {}
 
 SshSession::~SshSession() {
+    // A thread can't be destroyed while it runs; retire() never gets here
+    // before it's done.
     stop();
-    wait(5000);
+    wait();
+}
+
+void SshSession::retire() {
+    disconnect();
+    stop();
+    setParent(nullptr);
+    connect(this, &QThread::finished, this, &QObject::deleteLater);
+    if (!isRunning())
+        deleteLater();
 }
 
 void SshSession::write(const QByteArray &data) {
@@ -488,11 +499,15 @@ void SshSession::run() {
     while ((got = ssh_channel_read_nonblocking(s.channel, buffer, sizeof buffer, 0)) > 0)
         emit dataReceived(QByteArray(buffer, got));
     uint32_t exitCode = 0;
-    char *signal = nullptr;
-    int coreDumped = 0;
-    ssh_channel_get_exit_state(s.channel, &exitCode, &signal, &coreDumped);
-    if (signal)
-        ssh_string_free_char(signal);
+    // A session being closed has a shell still running: no exit status is
+    // coming, and asking would wait out the timeout.
+    if (!m_stopping) {
+        char *signal = nullptr;
+        int coreDumped = 0;
+        ssh_channel_get_exit_state(s.channel, &exitCode, &signal, &coreDumped);
+        if (signal)
+            ssh_string_free_char(signal);
+    }
     say(QString("Connection to %1 closed.\n").arg(host));
     emit finished(m_stopping ? 0 : int(exitCode));
 }

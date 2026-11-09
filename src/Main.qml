@@ -135,6 +135,9 @@ ApplicationWindow {
         if (index < 0 || index >= tabModel.count)
             return
         tabModel.remove(index)
+        // On a phone the last session closing goes back to the list of hosts.
+        if (narrow && tabModel.count === 0)
+            sidebarVisible = true
         Qt.callLater(focusActivePane)
     }
 
@@ -421,6 +424,8 @@ ApplicationWindow {
                                             MouseArea {
                                                 id: closeArea
                                                 anchors.fill: parent
+                                                // A finger needs more to aim at than a pointer.
+                                                anchors.margins: Style.touch ? -9 : 0
                                                 hoverEnabled: true
                                                 onClicked: win.closeTab(tab.index)
                                             }

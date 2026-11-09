@@ -7,6 +7,7 @@
 #include <QStandardPaths>
 #include <QScopeGuard>
 #include <QProcess>
+#include <QElapsedTimer>
 #include <QInputMethodEvent>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -705,6 +706,25 @@ private slots:
         QVERIFY(done.wait(15000));
         QVERIFY(!again.screenText(20).contains("continue connecting"));
         QVERIFY2(again.screenText(20).contains("ssh-ok-5"), qPrintable(again.screenText(20)));
+
+        // Closing a tab on a running shell is immediate: it doesn't wait
+        // for an exit status that a shell still running never sends.
+        {
+            QVariantMap shell = settings;
+            shell.remove("command");
+            auto *live = new TerminalView;
+            live->setSize(QSizeF(900, 400));
+            QVERIFY(live->startSsh(shell));
+            QTest::qWait(1500);
+            live->sendText("echo live-$((40+2))\r");
+            QTRY_VERIFY2_WITH_TIMEOUT(live->screenText(30).contains("live-42"), qPrintable(live->screenText(30)), 10000);
+            QElapsedTimer closing;
+            closing.start();
+            delete live;
+            QVERIFY2(closing.elapsed() < 1000, qPrintable(QString("closing took %1 ms").arg(closing.elapsed())));
+            // The connection's thread ends and cleans up on its own.
+            QTest::qWait(1500);
+        }
 
         // A passphrase typed on a phone keyboard: composing text with a
         // correction, a space, and stars for each character.

@@ -105,12 +105,10 @@ TerminalView::TerminalView(QQuickItem *parent) : QQuickPaintedItem(parent) {
 
 TerminalView::~TerminalView() {
 #ifdef TETHER_LIBSSH
-    // Stop the connection's thread before the screen it writes to goes away.
-    if (m_ssh) {
-        m_ssh->disconnect(this);
-        m_ssh->stop();
-        m_ssh->wait(5000);
-    }
+    // The connection ends on its own thread, in its own time: closing a tab
+    // never waits for the network.
+    if (m_ssh)
+        m_ssh->retire();
 #endif
     if (m_pty) {
         m_pty->disconnect(this);
@@ -261,11 +259,8 @@ void TerminalView::resizeTerminal() {
 
 bool TerminalView::startSsh(const QVariantMap &settings) {
 #ifdef TETHER_LIBSSH
-    if (m_ssh) {
-        m_ssh->disconnect(this);
-        m_ssh->stop();
-        m_ssh->deleteLater();
-    }
+    if (m_ssh)
+        m_ssh->retire();
     QVariantMap s = settings;
     s.insert("columns", m_cols);
     s.insert("rows", m_rows);

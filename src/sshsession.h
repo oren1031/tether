@@ -25,6 +25,11 @@ public:
     void write(const QByteArray &data);
     void resize(int columns, int rows);
     void stop();
+    // Ends a session nobody is watching anymore (its tab closed), without
+    // waiting: the thread is told to stop and the object deletes itself once
+    // the thread is done, which can take a call's timeout while it's still
+    // connecting or logging in.
+    void retire();
     // The answer to hostKeyQuestion, from a dialog; typing it works too.
     void answerHostKey(bool trust);
     // Takes a host's entries out of a known_hosts file, for a key that changed.
