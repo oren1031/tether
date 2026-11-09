@@ -19,36 +19,69 @@ command -v curl >/dev/null 2>&1 || fail "curl is needed."
 [ "$(uname -s)" = Linux ] || fail "this script is for Linux. On Windows, get the setup program from https://github.com/$REPO/releases/latest"
 [ "$(uname -m)" = x86_64 ] || fail "only x86_64 builds are published so far."
 
+MIRROR="${TETHER_MIRROR:-https://tether.orenamir.com}"
+
+# Prints "name<TAB>url<TAB>sha256" for each file of the newest release: from
+# the update server's latest.json when it answers, else from GitHub's API.
+# GitHub's API links work even when its download links don't.
+# One "key": value per line, whether the JSON came pretty or on one line.
+fields() {
+    printf '%s\n' "$1" | tr ',{}[]' '\n\n\n\n\n'
+}
 say "Finding the latest Tether…"
-release=$(curl -fsSL -H "Accept: application/vnd.github+json" "$API") || fail "couldn't reach GitHub."
-url_for() {
-    printf '%s\n' "$release" | grep -o '"browser_download_url": *"[^"]*"' | sed 's/.*"\(http[^"]*\)"/\1/' \
-        | grep -E "$1" | grep -v -- '-debug-' | head -n 1
+if manifest=$(curl -fsSL --max-time 10 "$MIRROR/latest.json" 2>/dev/null) && printf '%s' "$manifest" | grep -q '"version"'; then
+    source="$MIRROR"
+    files=$(fields "$manifest" | awk -v base="$MIRROR" -F'"' '
+        /"name": *"/   { name = $4 }
+        /"sha256": *"/ { sha = $4 }
+        /"url": *"/    { print name "\t" base "/" $4 "\t" sha; name = ""; sha = "" }')
+else
+    source=GitHub
+    release=$(curl -fsSL -H "Accept: application/vnd.github+json" "$API") || fail "couldn't reach GitHub."
+    files=$(fields "$release" | awk -F'"' '
+        /"url": *"https:\/\/api.github.com\/repos\/.*\/releases\/assets\// { url = $4 }
+        /"name": *"/   { name = $4 }
+        /"digest": *"/ { sha = $4; sub(/^sha256:/, "", sha) }
+        /"browser_download_url": *"/ { print name "\t" url "\t" sha; url = ""; name = ""; sha = "" }')
+fi
+pick() {
+    printf '%s\n' "$files" | grep -E "^[^	]*$1	" | grep -v -- '-debug-' | head -n 1
+}
+# Downloads a picked file to $2 and checks its checksum.
+fetch() {
+    name=$(printf '%s' "$1" | cut -f1); url=$(printf '%s' "$1" | cut -f2); sha=$(printf '%s' "$1" | cut -f3)
+    say "Downloading $name from $source…"
+    case "$url" in
+        https://api.github.com/*) curl -fL --progress-bar -H "Accept: application/octet-stream" -o "$2" "$url" ;;
+        *) curl -fL --progress-bar -o "$2" "$url" ;;
+    esac || fail "the download failed."
+    if [ -n "$sha" ] && command -v sha256sum >/dev/null 2>&1; then
+        echo "$sha  $2" | sha256sum -c --quiet - || fail "the downloaded file's checksum doesn't match; try again."
+    fi
 }
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 if command -v pacman >/dev/null 2>&1 && [ -d /var/lib/pacman/local ]; then
-    url=$(url_for '\-x86_64\.pkg\.tar\.zst$') || true
-    [ -n "$url" ] || fail "the latest release has no Arch package."
-    say "Downloading $(basename "$url")…"
-    curl -fL --progress-bar -o "$tmp/$(basename "$url")" "$url"
+    file=$(pick '-x86_64\.pkg\.tar\.zst') || true
+    [ -n "$file" ] || fail "the latest release has no Arch package."
+    package="$tmp/$(printf '%s' "$file" | cut -f1)"
+    fetch "$file" "$package"
     say "Installing with pacman (sudo asks for your password)…"
-    sudo pacman -U --needed "$tmp/$(basename "$url")"
+    sudo pacman -U --needed "$package"
     say "Done. Open Tether from your app launcher, or run: tether"
     exit 0
 fi
 
-url=$(url_for '\-x86_64\.AppImage$') || true
-[ -n "$url" ] || fail "the latest release has no AppImage yet."
+file=$(pick '-x86_64\.AppImage') || true
+[ -n "$file" ] || fail "the latest release has no AppImage yet."
 bin="$HOME/.local/bin"
 apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 icons="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
 mkdir -p "$bin" "$apps" "$icons"
 
-say "Downloading $(basename "$url")…"
-curl -fL --progress-bar -o "$tmp/Tether.AppImage" "$url"
+fetch "$file" "$tmp/Tether.AppImage"
 chmod +x "$tmp/Tether.AppImage"
 mv "$tmp/Tether.AppImage" "$bin/Tether.AppImage"
 ln -sf "$bin/Tether.AppImage" "$bin/tether"

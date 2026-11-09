@@ -122,6 +122,26 @@ git clone https://github.com/oren1031/tether.git
 cd tether && bin/install
 ```
 
+## Your own update server
+
+Tether looks for updates on an update server of your own before GitHub, and
+falls back to GitHub when it can't be reached (set it in Settings → General →
+Updates). Every download is checked against the release's SHA-256 checksum,
+wherever it came from.
+
+On the server, with the domain's DNS pointing at it:
+
+```sh
+git clone https://github.com/oren1031/tether.git
+sudo mkdir -p /srv/tether && sudo chown $USER /srv/tether
+tether/bin/mirror-release /srv/tether          # copies the newest release
+crontab -e    # */15 * * * * ~/tether/bin/mirror-release /srv/tether
+```
+
+and serve `/srv/tether` over HTTPS, for example with Caddy using
+[packaging/mirror/Caddyfile](packaging/mirror/Caddyfile). The installer uses
+it too: `TETHER_MIRROR=https://tether.example.com sh install.sh`.
+
 ## Build
 
 Needs Qt 6.9 or newer, picocom, and openssh. The terminal is built in, on [libvterm](third_party/libvterm).

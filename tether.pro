@@ -1,12 +1,16 @@
 QT += core gui qml quick quickcontrols2 network svg
 
 CONFIG += c++17 release
-VERSION = 0.5.0
+VERSION = 0.5.1
 # Where updates are published: owner/repository on GitHub. Forks can set
 # the TETHER_REPO environment variable to publish their own.
 TETHER_REPO = $$(TETHER_REPO)
 isEmpty(TETHER_REPO): TETHER_REPO = oren1031/tether
-DEFINES += APP_VERSION=\\\"$$VERSION\\\" TETHER_REPO=\\\"$$TETHER_REPO\\\"
+# A server of your own with the releases, checked before GitHub (see
+# bin/mirror-release); TETHER_MIRROR in the environment overrides it.
+TETHER_MIRROR = $$(TETHER_MIRROR)
+isEmpty(TETHER_MIRROR): TETHER_MIRROR = https://tether.orenamir.com
+DEFINES += APP_VERSION=\\\"$$VERSION\\\" TETHER_REPO=\\\"$$TETHER_REPO\\\" TETHER_MIRROR=\\\"$$TETHER_MIRROR\\\"
 TARGET = tether
 TEMPLATE = app
 include(third_party/libvterm/libvterm.pri)

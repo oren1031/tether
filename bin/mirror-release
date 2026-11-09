@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Copies Tether's newest release from GitHub to a folder a web server
+shares, with the latest.json manifest Tether checks before GitHub.
+
+    bin/mirror-release /srv/tether [--repo oren1031/tether] [--keep 3]
+
+Run it from cron (every 15 minutes is plenty) on the server behind
+https://tether.example.com, with that folder as the site's root; see
+packaging/mirror/Caddyfile. Files come through GitHub's API, which works even
+when GitHub's download links don't, and each is checked against the
+checksum GitHub recorded. latest.json is written last, so Tether never sees
+a release that's half copied.
+"""
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import sys
+import tempfile
+import urllib.request
+
+API = "https://api.github.com/repos/{repo}/releases/latest"
+UA = {"User-Agent": "tether-mirror"}
+
+
+def fetch(url, accept, token=None):
+    headers = dict(UA, Accept=accept)
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("folder", help="the folder the web server shares")
+    parser.add_argument("--repo", default="oren1031/tether")
+    parser.add_argument("--keep", type=int, default=3, help="older versions to keep")
+    args = parser.parse_args()
+    token = os.environ.get("GITHUB_TOKEN")  # optional, for GitHub's rate limits
+
+    release = json.load(fetch(API.format(repo=args.repo), "application/vnd.github+json", token))
+    version = release["tag_name"].lstrip("vV")
+    folder = os.path.abspath(args.folder)
+    target = os.path.join(folder, version)
+    os.makedirs(target, exist_ok=True)
+
+    assets = []
+    for asset in release["assets"]:
+        name = asset["name"]
+        if "-debug-" in name or name.endswith(".png") or name == "latest.json":
+            continue
+        path = os.path.join(target, name)
+        expected = (asset.get("digest") or "").removeprefix("sha256:")
+        if not (os.path.exists(path) and os.path.getsize(path) == asset["size"]):
+            print(f"downloading {name}")
+            with fetch(asset["url"], "application/octet-stream", token) as response, \
+                    tempfile.NamedTemporaryFile(dir=target, delete=False) as part:
+                shutil.copyfileobj(response, part)
+            os.replace(part.name, path)
+        digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+        if expected and digest != expected:
+            os.remove(path)
+            sys.exit(f"{name}: checksum doesn't match GitHub's; removed it, try again")
+        os.chmod(path, 0o644)
+        assets.append({"name": name, "size": os.path.getsize(path), "sha256": digest,
+                       "url": f"{version}/{name}"})
+
+    manifest = {"version": version, "notes": release.get("body") or "",
+                "page": release.get("html_url") or "", "assets": assets}
+    with tempfile.NamedTemporaryFile("w", dir=folder, delete=False) as out:
+        json.dump(manifest, out, indent=2)
+    os.chmod(out.name, 0o644)
+    os.replace(out.name, os.path.join(folder, "latest.json"))
+    print(f"latest.json: Tether {version}, {len(assets)} files")
+
+    # Older versions beyond --keep go, oldest first.
+    def key(name):
+        return [int(p) if p.isdigit() else 0 for p in name.split(".")]
+    versions = sorted((d for d in os.listdir(folder)
+                       if os.path.isdir(os.path.join(folder, d)) and d[:1].isdigit()), key=key)
+    for old in versions[:-(args.keep + 1)] if args.keep >= 0 else []:
+        if old != version:
+            shutil.rmtree(os.path.join(folder, old))
+            print(f"removed {old}")
+
+
+if __name__ == "__main__":
+    main()

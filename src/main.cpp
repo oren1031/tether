@@ -66,6 +66,9 @@ int main(int argc, char *argv[]) {
     SerialPorts serialPorts;
     Assistant assistant;
     Updater updater(QString(TETHER_REPO).trimmed(), APP_VERSION);
+    updater.setMirror(backend.settings().value("updateMirror").toString());
+    QObject::connect(&backend, &Backend::settingsChanged, &updater,
+                     [&] { updater.setMirror(backend.settings().value("updateMirror").toString()); });
 
     QQmlApplicationEngine engine;
     QObject::connect(&translator, &Translator::changed, &engine, &QQmlEngine::retranslate);

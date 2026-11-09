@@ -504,6 +504,29 @@ private slots:
         QCOMPARE(Updater::pickAsset(assets, "appimage")["name"].toString(), QString("Tether-0.3.0-x86_64.AppImage"));
         QCOMPARE(Updater::pickAsset(assets, "android")["name"].toString(), QString("Tether-0.3.0-android-arm64.apk"));
         QVERIFY(Updater::pickAsset(assets, "page").isEmpty());
+        // Your own server's latest.json: files relative to it, with checksums.
+        Updater mirror("oren1031/tether", "0.4.0");
+        const QJsonObject manifest{{"version", "0.5.1"}, {"notes", "Fixes"}, {"page", "https://example.com/r"},
+            {"assets", QJsonArray{QJsonObject{{"name", "tether-0.5.1-1-x86_64.pkg.tar.zst"}, {"size", 10},
+                                              {"sha256", "abc"}, {"url", "0.5.1/tether-0.5.1-1-x86_64.pkg.tar.zst"}}}}};
+        QVERIFY(mirror.readRelease(manifest, QUrl("https://tether.example.com/latest.json")));
+        QCOMPARE(mirror.latestVersion(), QString("0.5.1"));
+        QCOMPARE(mirror.expectedSha256(), QString("abc"));
+        if (mirror.installKind() == "pacman")
+            QCOMPARE(mirror.sources().value(0).toString(),
+                     QString("https://tether.example.com/0.5.1/tether-0.5.1-1-x86_64.pkg.tar.zst"));
+        // GitHub's: the API link first (it works when download links don't), then the download link.
+        const QJsonObject github{{"tag_name", "v0.5.1"}, {"body", "Fixes"},
+            {"assets", QJsonArray{QJsonObject{{"name", "tether-0.5.1-1-x86_64.pkg.tar.zst"}, {"size", 10},
+                                              {"digest", "sha256:def"},
+                                              {"url", "https://api.github.com/repos/o/t/releases/assets/1"},
+                                              {"browser_download_url", "https://github.com/o/t/releases/download/v0.5.1/x"}}}}};
+        QVERIFY(mirror.readRelease(github, QUrl()));
+        QCOMPARE(mirror.expectedSha256(), QString("def"));
+        if (mirror.installKind() == "pacman") {
+            QCOMPARE(mirror.sources().size(), 2);
+            QCOMPARE(mirror.sources().first().host(), QString("api.github.com"));
+        }
         Updater none({}, "0.2.0");
         QVERIFY(!none.configured());
     }

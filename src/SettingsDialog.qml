@@ -386,6 +386,18 @@ TSheet {
                         }
                     }
                     Row_ {
+                        label: qsTr("Update server")
+                        note: updater.source ? qsTr("Last found on %1. GitHub is used when this server can't be reached.").arg(updater.source)
+                                             : qsTr("Your own server with Tether's releases (see bin/mirror-release), checked before GitHub. Blank uses GitHub alone.")
+                        TField {
+                            width: 240
+                            text: backend.settings.updateMirror
+                            placeholderText: "https://tether.example.com"
+                            inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase
+                            onEditingFinished: if (text !== backend.settings.updateMirror) dialog.set("updateMirror", text)
+                        }
+                    }
+                    Row_ {
                         label: qsTr("Check for updates automatically")
                         last: true
                         TSwitch {

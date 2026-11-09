@@ -7,6 +7,7 @@
 #include <QtCore/qcoreapplication_platform.h>
 #endif
 #include <QUrl>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QProcess>
 #include <QFile>
@@ -95,34 +96,72 @@ void Updater::setState(const QString &state, const QString &message) {
     emit changed();
 }
 
+// A release as Tether's own manifest (latest.json) or GitHub's API gives it:
+// version, notes, page, and the asset for this system with every place it can
+// be downloaded from and its checksum.
+bool Updater::readRelease(const QJsonObject &release, const QUrl &base) {
+    const bool manifest = release.contains("version");
+    m_latest = (manifest ? release.value("version") : release.value("tag_name")).toString().remove(QRegularExpression("^[vV]"));
+    m_notes = (manifest ? release.value("notes") : release.value("body")).toString().trimmed();
+    m_releaseUrl = (manifest ? release.value("page") : release.value("html_url")).toString();
+    m_asset = pickAsset(release.value("assets").toArray().toVariantList(), installKind());
+    m_sources.clear();
+    if (!m_asset.isEmpty()) {
+        if (manifest) {
+            m_sources << base.resolved(QUrl(m_asset.value("url").toString()));
+            m_sha256 = m_asset.value("sha256").toString();
+        } else {
+            m_sha256 = m_asset.value("digest").toString().remove("sha256:");
+        }
+        // GitHub's API serves the file even when its download links don't.
+        const QString api = m_asset.value("url").toString();
+        if (!manifest && api.startsWith("https://api.github.com/"))
+            m_sources << QUrl(api);
+        const QString direct = m_asset.value("browser_download_url").toString();
+        if (!direct.isEmpty())
+            m_sources << QUrl(direct);
+    }
+    m_downloadUrl = m_sources.isEmpty() ? QString() : m_sources.first().toString();
+    return !m_latest.isEmpty();
+}
+
 void Updater::check(bool quiet) {
     if (!configured() || m_reply || m_state == "downloading")
         return;
-    QNetworkRequest request(QUrl("https://api.github.com/repos/" + m_repository + "/releases/latest"));
-    request.setRawHeader("Accept", "application/vnd.github+json");
-    request.setHeader(QNetworkRequest::UserAgentHeader, "Tether/" + m_current);
-    request.setTransferTimeout(20000);
     if (!quiet)
         setState("checking", tr("Checking for updates…"));
+    // Your own server first, when there is one; GitHub otherwise.
+    if (!m_mirror.isEmpty())
+        checkAt(QUrl(m_mirror + "/latest.json"), quiet, true);
+    else
+        checkAt(QUrl("https://api.github.com/repos/" + m_repository + "/releases/latest"), quiet, false);
+}
+
+void Updater::checkAt(const QUrl &url, bool quiet, bool mirror) {
+    QNetworkRequest request(url);
+    request.setRawHeader("Accept", mirror ? "application/json" : "application/vnd.github+json");
+    request.setHeader(QNetworkRequest::UserAgentHeader, "Tether/" + m_current);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setTransferTimeout(mirror ? 10000 : 20000);
     m_reply = m_network.get(request);
     QNetworkReply *reply = m_reply;
-    connect(reply, &QNetworkReply::finished, this, [this, reply, quiet] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, quiet, mirror, url] {
         reply->deleteLater();
         m_reply = nullptr;
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        if (status != 200) {
+        const QJsonObject release = QJsonDocument::fromJson(reply->readAll()).object();
+        if (status != 200 || !readRelease(release, url)) {
+            if (mirror && !m_repository.isEmpty()) {
+                checkAt(QUrl("https://api.github.com/repos/" + m_repository + "/releases/latest"), quiet, false);
+                return;
+            }
             const QString why = status == 404 ? tr("No releases have been published yet.")
-                              : status == 0 ? tr("Couldn't reach GitHub: %1").arg(reply->errorString())
-                              : tr("GitHub answered with HTTP %1.").arg(status);
+                              : status == 0 ? tr("Couldn't reach the update server: %1").arg(reply->errorString())
+                              : tr("The update server answered with HTTP %1.").arg(status);
             setState(quiet ? "idle" : "error", quiet ? QString() : why);
             return;
         }
-        const QJsonObject release = QJsonDocument::fromJson(reply->readAll()).object();
-        m_latest = release.value("tag_name").toString().remove(QRegularExpression("^[vV]"));
-        m_notes = release.value("body").toString().trimmed();
-        m_releaseUrl = release.value("html_url").toString();
-        m_asset = pickAsset(release.value("assets").toArray().toVariantList(), installKind());
-        m_downloadUrl = m_asset.value("browser_download_url").toString();
+        m_source = mirror ? url.host() : QString("GitHub");
         if (available())
             setState("idle", tr("Tether %1 is available.").arg(m_latest));
         else
@@ -133,32 +172,76 @@ void Updater::check(bool quiet) {
 void Updater::download() {
     if (!available() || m_reply)
         return;
-    if (m_asset.isEmpty()) {
+    if (m_sources.isEmpty()) {
         setState("error", tr("This release has no download for this system; get it from the release page."));
+        return;
+    }
+    m_progress = 0;
+    setState("downloading", tr("Downloading Tether %1…").arg(m_latest));
+    downloadFrom(0);
+}
+
+// Tries each place the file is offered until one delivers it whole, with
+// the right checksum.
+void Updater::downloadFrom(int index) {
+    if (index >= m_sources.size()) {
+        // Your server's copy didn't work out: ask GitHub for the same release.
+        if (m_source != "GitHub" && !m_repository.isEmpty()) {
+            const QString wanted = m_latest;
+            QNetworkRequest request(QUrl("https://api.github.com/repos/" + m_repository + "/releases/latest"));
+            request.setRawHeader("Accept", "application/vnd.github+json");
+            request.setHeader(QNetworkRequest::UserAgentHeader, "Tether/" + m_current);
+            request.setTransferTimeout(20000);
+            m_reply = m_network.get(request);
+            QNetworkReply *reply = m_reply;
+            connect(reply, &QNetworkReply::finished, this, [this, reply, wanted] {
+                reply->deleteLater();
+                m_reply = nullptr;
+                const QJsonObject release = QJsonDocument::fromJson(reply->readAll()).object();
+                if (reply->error() == QNetworkReply::NoError && readRelease(release, QUrl()) && m_latest == wanted) {
+                    m_source = "GitHub";
+                    downloadFrom(0);
+                } else {
+                    setState("error", tr("The download failed from every source: %1").arg(m_lastDownloadError));
+                }
+            });
+            return;
+        }
+        setState("error", tr("The download failed from every source: %1").arg(m_lastDownloadError));
         return;
     }
     const QString directory = updatesDirectory();
     QDir().mkpath(directory);
-    const QString name = QFileInfo(m_asset.value("name").toString()).fileName();
-    const QString target = directory + "/" + name;
-    QNetworkRequest request(QUrl(m_asset.value("browser_download_url").toString()));
+    const QString target = directory + "/" + QFileInfo(m_asset.value("name").toString()).fileName();
+    const QUrl url = m_sources.at(index);
+    QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::UserAgentHeader, "Tether/" + m_current);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
-    m_progress = 0;
-    setState("downloading", tr("Downloading Tether %1…").arg(m_latest));
+    if (url.host() == "api.github.com")
+        request.setRawHeader("Accept", "application/octet-stream");
+    request.setTransferTimeout(60000);
     m_reply = m_network.get(request);
     QNetworkReply *reply = m_reply;
     connect(reply, &QNetworkReply::downloadProgress, this, [this](qint64 got, qint64 total) {
         m_progress = total > 0 ? double(got) / total : 0;
         emit changed();
     });
-    connect(reply, &QNetworkReply::finished, this, [this, reply, target] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, target, index, url] {
         reply->deleteLater();
         m_reply = nullptr;
         const QByteArray data = reply->readAll();
         const qint64 expected = m_asset.value("size").toLongLong();
-        if (reply->error() != QNetworkReply::NoError || (expected > 0 && data.size() != expected)) {
-            setState("error", tr("The download failed: %1").arg(reply->errorString()));
+        QString problem;
+        if (reply->error() != QNetworkReply::NoError)
+            problem = reply->errorString();
+        else if (expected > 0 && data.size() != expected)
+            problem = tr("got %1 bytes instead of %2").arg(data.size()).arg(expected);
+        else if (!m_sha256.isEmpty()
+                 && QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex() != m_sha256.toLatin1())
+            problem = tr("the file's checksum doesn't match");
+        if (!problem.isEmpty()) {
+            m_lastDownloadError = url.host() + ": " + problem;
+            downloadFrom(index + 1);
             return;
         }
         QSaveFile file(target);

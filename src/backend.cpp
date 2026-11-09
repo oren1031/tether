@@ -2,6 +2,10 @@
 
 #include "serialports.h"
 #include "credentials.h"
+
+#ifndef TETHER_MIRROR
+#define TETHER_MIRROR ""
+#endif
 #ifdef TETHER_LIBSSH
 #include "sshsession.h"
 #endif
@@ -110,7 +114,8 @@ QVariantMap Backend::defaultSettings() {
             {"shareConnections", true},   // ssh ControlMaster: one login per host for panes and files
             {"syncFolder", ""},
             {"checkUpdates", true},
-            {"aiProvider", "auto"}};      // auto, api, or claude-code
+            {"aiProvider", "auto"},
+            {"updateMirror", TETHER_MIRROR}};      // auto, api, or claude-code
 }
 
 QVariantMap Backend::settings() const {

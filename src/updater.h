@@ -4,6 +4,8 @@
 #include <QObject>
 #include <QPointer>
 #include <QTimer>
+#include <QJsonObject>
+#include <QUrl>
 #include <QVariant>
 
 class QNetworkReply;
@@ -31,6 +33,20 @@ class Updater : public QObject {
 public:
     explicit Updater(const QString &repository, const QString &currentVersion, QObject *parent = nullptr);
 
+    // A server of your own with Tether's latest.json and files, checked
+    // before GitHub: https://tether.example.com (empty for GitHub alone).
+    Q_PROPERTY(QString mirror READ mirror WRITE setMirror NOTIFY changed)
+    QString mirror() const { return m_mirror; }
+    void setMirror(const QString &url) {
+        QString clean = url.trimmed();
+        while (clean.endsWith('/'))
+            clean.chop(1);
+        if (clean != m_mirror) { m_mirror = clean; emit changed(); }
+    }
+    // Where the last check found the release: the server's name or GitHub.
+    Q_PROPERTY(QString source READ source NOTIFY changed)
+    QString source() const { return m_source; }
+
     QString currentVersion() const { return m_current; }
     QString latestVersion() const { return m_latest; }
     QString notes() const { return m_notes; }
@@ -57,6 +73,9 @@ public:
     Q_INVOKABLE bool launchInstaller();
     static bool openAndroidInstaller(const QString &apk);
     static QString updatesDirectory();
+    bool readRelease(const QJsonObject &release, const QUrl &base);
+    QList<QUrl> sources() const { return m_sources; }
+    QString expectedSha256() const { return m_sha256; }
     // AppImage: swaps the downloaded file in for the running one and restarts.
     Q_INVOKABLE bool replaceAppImage();
 
@@ -70,6 +89,8 @@ signals:
 
 private:
     void setState(const QString &state, const QString &message = {});
+    void checkAt(const QUrl &url, bool quiet, bool mirror);
+    void downloadFrom(int index);
 
     QString m_repository;
     QString m_current;
@@ -82,6 +103,11 @@ private:
     QString m_file;
     QVariantMap m_asset;
     QString m_downloadUrl;
+    QString m_mirror;
+    QString m_source;
+    QString m_sha256;
+    QString m_lastDownloadError;
+    QList<QUrl> m_sources;
     QNetworkAccessManager m_network;
     QPointer<QNetworkReply> m_reply;
     QTimer m_timer;
