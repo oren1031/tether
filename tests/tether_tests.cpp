@@ -661,7 +661,11 @@ private slots:
             QVariantMap{{"name", "tether-0.3.0-1-x86_64.pkg.tar.zst"}},
             QVariantMap{{"name", "Tether-0.3.0-setup.exe"}},
             QVariantMap{{"name", "Tether-0.3.0-x86_64.AppImage"}},
-            QVariantMap{{"name", "Tether-0.3.0-android-arm64.apk"}}};
+            QVariantMap{{"name", "Tether-0.3.0-android-arm64.apk"}},
+            // What a signed release adds: older copies of Tether pick files by
+            // their endings and must not take any of these for a download.
+            QVariantMap{{"name", "latest.json"}}, QVariantMap{{"name", "latest.json.sig"}},
+            QVariantMap{{"name", "SHA256SUMS"}}, QVariantMap{{"name", "SHA256SUMS.sig"}}};
         QCOMPARE(Updater::pickAsset(assets, "pacman")["name"].toString(), QString("tether-0.3.0-1-x86_64.pkg.tar.zst"));
         QCOMPARE(Updater::pickAsset(assets, "windows")["name"].toString(), QString("Tether-0.3.0-setup.exe"));
         QCOMPARE(Updater::pickAsset(assets, "appimage")["name"].toString(), QString("Tether-0.3.0-x86_64.AppImage"));

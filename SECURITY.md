@@ -11,7 +11,7 @@ Please report security problems privately, not in a public issue.
 - Or write to the maintainer, whose address is on the GitHub profile
   <https://github.com/oren1031>.
 
-Say which version you used (Settings shows it, or `tether --version`), what
+Say which version you used (Settings shows it), what
 system, and what you did. Expect an answer within a few days; a fix is
 released as a new version, and the notes say what was wrong once people have
 had time to update.

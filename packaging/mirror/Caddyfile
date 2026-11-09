@@ -4,8 +4,8 @@
 tether.example.com {
 	root * /srv/tether
 	file_server browse
-	# latest.json changes with each release; the files under a version never do.
-	@manifest path /latest.json
+	# latest.json and its signature change with each release; the files under a version never do.
+	@manifest path /latest.json /latest.json.sig
 	header @manifest Cache-Control "no-cache"
 	header /*/* Cache-Control "public, max-age=31536000, immutable"
 }
