@@ -1,5 +1,15 @@
 #include "selftest.h"
 
+#include <QtGlobal>
+
+// A released APK has no self-test: on a phone any app can start Tether with
+// arguments, and --ssh-test and --try-install act on them. The build CI runs
+// in an emulator is made with CONFIG+=tether_test, which keeps it.
+#if defined(Q_OS_ANDROID) && !defined(TETHER_TEST_HOOKS)
+void startSelfTest() {}
+int finishSelfTest(QQmlApplicationEngine &, const QStringList &) { return 1; }
+#else
+
 #include "credentials.h"
 #include "terminalview.h"
 #include "updater.h"
@@ -307,3 +317,5 @@ int finishSelfTest(QQmlApplicationEngine &engine, const QStringList &arguments) 
     qInstallMessageHandler(previousHandler);
     return failures ? 1 : 0;
 }
+
+#endif // a released APK has no self-test

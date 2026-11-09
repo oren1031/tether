@@ -205,14 +205,22 @@ ApplicationWindow {
                 Qt.callLater(() => hostDialog.openFor({ kind: "ssh" }))
         }
         // tether --connect user@host[:port] [--identity key]: straight to a session.
+        // On a phone the arguments come from whichever app started Tether, so
+        // there it asks first, and takes no key file from them.
+        // (main.cpp says whether they can be trusted; tests that load this file alone can.)
+        const trusted = typeof argumentsTrusted === "undefined" ? true : argumentsTrusted
         const at = args.indexOf("--connect")
         if (at >= 0 && at + 1 < args.length && args.indexOf("--self-test") < 0) {
             const profile = backend.quickConnect(args[at + 1])
             const key = args.indexOf("--identity")
-            if (!profile.error && key >= 0 && key + 1 < args.length)
+            if (!profile.error && trusted && key >= 0 && key + 1 < args.length)
                 profile.identityFile = args[key + 1]
             if (profile.error)
                 showMessage(qsTr("Can't connect"), profile.error)
+            else if (!trusted)
+                Qt.callLater(() => showMessage(qsTr("Connect to %1?").arg(args[at + 1]),
+                                               qsTr("Another app asked Tether to open this connection. Connect only if you expected it."),
+                                               qsTr("Connect"), () => openTab(profile)))
             else
                 Qt.callLater(() => openTab(profile))
         }

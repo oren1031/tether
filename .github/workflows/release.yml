@@ -1,7 +1,20 @@
 # Pushing a tag like v0.3.0 tests Tether, builds the Arch package, the
-# AppImage, and the Windows installer, and publishes them as a GitHub release,
-# which installed copies offer as an update. Running it by hand builds
-# everything without publishing.
+# AppImage, the Windows installer and the Android APK, signs the release's
+# list of files, and publishes them as a GitHub release, which installed
+# copies offer as an update. Running it by hand builds everything without
+# publishing.
+#
+# A tagged release needs three repository secrets (Settings > Secrets):
+#   ANDROID_KEYSTORE           the release keystore (.p12) as one line of base64
+#   ANDROID_KEYSTORE_PASSWORD  its password
+#   UPDATE_SIGNING_KEY         the update-signing private key, the text of the
+#                              OpenSSH ed25519 key file (BEGIN ... END lines)
+# Without them a tagged run stops at once (the "check" job) instead of
+# publishing a release that phones or desktops would refuse.
+#
+# Third-party actions are pinned to a commit (the version is in the comment);
+# .github/dependabot.yml proposes updates. Jobs get a read-only token; only
+# "publish" can write.
 name: Release
 
 on:
@@ -10,10 +23,50 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  # Cheap checks first, so a tag that can't be published fails in seconds.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          grep -q "^VERSION = $want\$" tether.pro || { echo "tether.pro VERSION isn't $want"; exit 1; }
+          grep -q "^pkgver=$want\$" pkgbuild/PKGBUILD || { echo "PKGBUILD pkgver isn't $want"; exit 1; }
+
+      - name: Check the signing secrets and keys
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          for name in ANDROID_KEYSTORE ANDROID_KEYSTORE_PASSWORD UPDATE_SIGNING_KEY; do
+            eval "value=\$$name"
+            [ -n "$value" ] || { echo "::error::the repository secret $name is not set; a release without it can't be installed over the last one"; exit 1; }
+          done
+          # The update key must be the one built into the app, or every
+          # installed copy would refuse this release.
+          bin/sign-release --try
+          # The Android key must be the one the last release was signed with.
+          printf '%s' "$ANDROID_KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.p12"
+          openssl pkcs12 -in "$RUNNER_TEMP/release.p12" -passin env:ANDROID_KEYSTORE_PASSWORD -nokeys -legacy 2>/dev/null \
+            | openssl x509 -outform der | sha256sum | cut -d' ' -f1 > "$RUNNER_TEMP/cert.sha256" \
+            || { echo "::error::couldn't read the Android keystore with its password"; exit 1; }
+          rm -f "$RUNNER_TEMP/release.p12"
+          if [ "$(cat "$RUNNER_TEMP/cert.sha256")" != "$(cat packaging/android/release-cert.sha256)" ]; then
+            echo "::error::the Android keystore (or its password) isn't the release key recorded in packaging/android/release-cert.sha256"
+            exit 1
+          fi
+          echo "Secrets present; the update key and the Android key are the expected ones."
+
   arch:
+    needs: check
     runs-on: ubuntu-latest
     container: archlinux:latest
     steps:
@@ -22,14 +75,7 @@ jobs:
           pacman -Syu --noconfirm --needed base-devel git \
             qt6-base qt6-declarative qt6-svg qt6-wayland openssh picocom libssh
 
-      - uses: actions/checkout@v4
-
-      - name: Check the tag matches the version
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          want="${GITHUB_REF_NAME#v}"
-          grep -q "^VERSION = $want\$" tether.pro || { echo "tether.pro VERSION isn't $want"; exit 1; }
-          grep -q "^pkgver=$want\$" pkgbuild/PKGBUILD || { echo "PKGBUILD pkgver isn't $want"; exit 1; }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # As a normal user, like people run Tether: root can open any device,
       # so the serial permission checks would mean nothing.
@@ -49,18 +95,19 @@ jobs:
       - name: Self-test
         run: su builder -c "QT_QPA_PLATFORM=offscreen build/tether --self-test"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: arch
+          name: arch-${{ github.run_attempt }}
           path: pkgbuild/tether-[0-9]*-x86_64.pkg.tar.zst
 
   # Built on the oldest supported Ubuntu, so the AppImage runs on it and
   # anything newer, with Qt inside. Qt Serial Port lets it open serial ports
   # itself where picocom isn't installed.
   appimage:
+    needs: check
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install build tools
         run: |
@@ -68,7 +115,7 @@ jobs:
           sudo apt-get install -y build-essential libgl1-mesa-dev libxkbcommon-dev \
             libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libfuse2 file
 
-      - uses: jurplel/install-qt-action@v4
+      - uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
         with:
           version: '6.10.*'
           modules: 'qtserialport'
@@ -85,11 +132,21 @@ jobs:
           TETHER_REPO: ${{ github.repository }}
         run: bin/build
 
+      # linuxdeploy and its Qt plugin only publish a rolling "continuous" build
+      # for these versions, so they are pinned by checksum: if upstream
+      # replaces one, this step stops instead of packaging with an unknown
+      # tool. To update: download both, test an AppImage, put the new sums here.
       - name: Package the AppImage
         run: |
           base=https://github.com/linuxdeploy
-          wget -q "$base/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
-          wget -q "$base/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage"
+          fetch() {
+            wget -q -O "$2" "$1"
+            echo "$3  $2" | sha256sum -c - || { echo "::error::$2 isn't the build pinned in release.yml (upstream replaced it?)"; exit 1; }
+          }
+          fetch "$base/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage" \
+            linuxdeploy-x86_64.AppImage df908b19f1ed1cdafa79508d415aa12d6c56ce4d56d4149aa8c09286718706e5
+          fetch "$base/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage" \
+            linuxdeploy-plugin-qt-x86_64.AppImage cfc1055b2b9dbc08412b579f20990b7b41a17b61beaa5847dc9477c96c9e9617
           chmod +x linuxdeploy*.AppImage
           version=$(sed -n 's/^VERSION = //p' tether.pro)
           export QML_SOURCES_PATHS="$PWD/src" EXTRA_QT_MODULES="svg" LDAI_OUTPUT="Tether-$version-x86_64.AppImage"
@@ -99,27 +156,28 @@ jobs:
       - name: Self-test the AppImage
         run: QT_QPA_PLATFORM=offscreen ./Tether-*-x86_64.AppImage --self-test
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: appimage
+          name: appimage-${{ github.run_attempt }}
           path: Tether-*-x86_64.AppImage
 
   # Windows 10 1809 and later: ConPTY for terminals, the built-in OpenSSH
   # client for ssh, Qt Serial Port for COM ports, and Credential Manager for
   # vault passwords. Inno Setup makes a per-user installer.
   windows:
+    needs: check
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: jurplel/install-qt-action@v4
+      - uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
         with:
           version: '6.10.*'
           arch: 'win64_msvc2022_64'
           modules: 'qtserialport'
           cache: true
 
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
       - name: Build Tether
         shell: cmd
@@ -145,10 +203,10 @@ jobs:
           Get-Content selftest-err.txt
           exit $p.ExitCode
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: windows-screenshot
+          name: windows-screenshot-${{ github.run_attempt }}
           path: tether-windows.png
 
       - name: Make the installer
@@ -162,20 +220,22 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-ChildItem dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: windows
+          name: windows-${{ github.run_attempt }}
           path: dist/Tether-*-setup.exe
 
   # Android 9 and later, on 64-bit ARM phones and tablets. The APK is signed
   # with the release key kept in the repository's secrets, so each version
-  # installs over the last; without it, a throwaway key is used.
+  # installs over the last. A tagged build without that key fails; a manual
+  # run signs with a throwaway key and says so.
   android:
+    needs: check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: '17'
@@ -187,7 +247,7 @@ jobs:
           "$sdk" --install "ndk;27.2.12479018" "platforms;android-35" "build-tools;35.0.0" >/dev/null
           echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
 
-      - uses: jurplel/install-qt-action@v4
+      - uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
         with:
           version: '6.10.*'
           # Qt 6.7 and later list Android under all_os; autodesktop adds the
@@ -198,7 +258,7 @@ jobs:
           autodesktop: true
           cache: true
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/tether-libssh
           key: libssh-0.12.2-openssl-b71f147-arm64-v8a-${{ hashFiles('packaging/android/build-libssh.sh') }}
@@ -208,24 +268,36 @@ jobs:
           TETHER_REPO: ${{ github.repository }}
           KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          TETHER_REQUIRE_KEY: ${{ startsWith(github.ref, 'refs/tags/') && '1' || '' }}
         run: |
           sudo apt-get install -y librsvg2-bin ninja-build >/dev/null
           version=$(sed -n 's/^VERSION = //p' tether.pro)
           packaging/android/build-apk.sh arm64-v8a "$PWD/Tether-$version-android-arm64.apk"
 
-      - uses: actions/upload-artifact@v4
+      # Phones only install an update signed with the same key as the app
+      # they have; compare before anything is uploaded.
+      - name: Check the APK is signed with the release key
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          got=$(packaging/android/apk-cert Tether-*-android-arm64.apk)
+          want=$(cat packaging/android/release-cert.sha256)
+          echo "APK certificate: $got"
+          [ "$got" = "$want" ] || { echo "::error::the APK is not signed with the release key ($want)"; exit 1; }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: android
+          name: android-${{ github.run_attempt }}
           path: Tether-*-android-arm64.apk
 
   # The same app built for x86_64 and run in an Android emulator: the
   # self-test, then a screenshot of it running.
   android-emulator:
+    needs: check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: '17'
@@ -238,7 +310,7 @@ jobs:
           echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
           sudo apt-get install -y librsvg2-bin ninja-build >/dev/null
 
-      - uses: jurplel/install-qt-action@v4
+      - uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
         with:
           version: '6.10.*'
           host: 'all_os'
@@ -247,12 +319,15 @@ jobs:
           autodesktop: true
           cache: true
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/tether-libssh
           key: libssh-0.12.2-openssl-b71f147-x86_64-${{ hashFiles('packaging/android/build-libssh.sh') }}
 
       - name: Build the APK
+        env:
+          # Only this test build has the self-test and test switches.
+          TETHER_TEST_HOOKS: '1'
         run: packaging/android/build-apk.sh x86_64 "$PWD/Tether-test-x86_64.apk"
 
       # A throwaway sshd on this machine for the built-in ssh to log in to.
@@ -276,9 +351,10 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - name: Self-test in the emulator
-        uses: reactivecircus/android-emulator-runner@v2
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
-          api-level: 34
+          # Android 15 and later draw edge-to-edge, where 0.5.3's layout bugs showed.
+          api-level: 35
           arch: x86_64
           target: google_apis
           disable-animations: true
@@ -296,32 +372,83 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: android-screenshot
+          name: android-screenshot-${{ github.run_attempt }}
           path: tether-android*.png
 
   publish:
-    needs: [arch, appimage, windows, android, android-emulator]
+    needs: [check, arch, appimage, windows, android, android-emulator]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write      # create the release
+      id-token: write      # attest where the files were built
+      attestations: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Every attempt of this run left its own artifacts (arch-1, arch-2, ...):
+      # take the newest attempt of each, never an older build of the same file.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          path: dist
-          merge-multiple: true
+          path: artifacts
+
+      - name: Collect the newest build of each file
+        run: |
+          mkdir dist
+          for kind in arch appimage windows android; do
+            newest=$(ls -d artifacts/$kind-[0-9]* | sed "s#.*$kind-##" | sort -n | tail -n 1)
+            [ -n "$newest" ] || { echo "::error::no $kind build"; exit 1; }
+            echo "$kind: attempt $newest"
+            cp artifacts/$kind-$newest/* dist/
+          done
+          ls -la dist
+          # Exactly the four files people download, and nothing else.
+          [ "$(ls dist | wc -l)" = 4 ] || { echo "::error::expected 4 files"; exit 1; }
+
+      - name: Check the APK again before publishing it
+        run: |
+          got=$(packaging/android/apk-cert dist/Tether-*-android-arm64.apk)
+          [ "$got" = "$(cat packaging/android/release-cert.sha256)" ] \
+            || { echo "::error::the APK isn't signed with the release key"; exit 1; }
+
+      # The release notes: this version's part of CHANGELOG.md when it has
+      # one, else GitHub's generated list.
+      - name: Release notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            /^## / { on = ($0 ~ "^## \\[?" v "[] ]|^## \\[?" v "$") ; next }
+            on' CHANGELOG.md > notes.md || true
+          [ -s notes.md ] || rm -f notes.md
+          ls notes.md 2>/dev/null || echo "no CHANGELOG entry for $version; GitHub will generate notes"
+
+      # latest.json (each file's size and SHA-256) and SHA256SUMS, with
+      # signatures: what installed copies of Tether and install.sh check.
+      - name: Sign the release
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          notes=""; [ -f notes.md ] && notes="--notes notes.md"
+          bin/sign-release dist "$version" --page "https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME" $notes
+          ls -la dist
+
+      - name: Attest where the files were built
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: dist/*
 
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # The CI screenshot is for checking the build, not for downloading.
-          rm -f dist/*.png
-          ls -la dist
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" dist/* --clobber --repo "$GITHUB_REPOSITORY"
           else
+            if [ -f notes.md ]; then notes="--notes-file notes.md"; else notes="--generate-notes"; fi
             gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
-              --title "Tether ${GITHUB_REF_NAME#v}" --generate-notes
+              --title "Tether ${GITHUB_REF_NAME#v}" $notes
           fi

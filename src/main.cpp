@@ -38,7 +38,13 @@ int main(int argc, char *argv[]) {
     QGuiApplication app(argc, argv);
     // tether --self-test [screenshot.png]: checks this system, loads the
     // whole interface, and reports; nothing is saved.
+    // On Android the arguments come from whichever app started Tether, so
+    // only the build CI tests in an emulator (CONFIG+=tether_test) has it.
+#if defined(Q_OS_ANDROID) && !defined(TETHER_TEST_HOOKS)
+    const bool selfTest = false;
+#else
     const bool selfTest = app.arguments().contains("--self-test");
+#endif
     if (selfTest)
         startSelfTest();
     app.setApplicationName("tether");
@@ -81,6 +87,13 @@ int main(int argc, char *argv[]) {
     QObject::connect(&backend, &Backend::settingsChanged, &assistant,
                      [&] { assistant.setProvider(backend.settings().value("aiProvider").toString()); });
     engine.rootContext()->setContextProperty("updater", &updater);
+    // Whether arguments can be trusted to come from the person using Tether:
+    // not on a phone, where any app can start it with arguments of its own.
+#if defined(Q_OS_ANDROID) && !defined(TETHER_TEST_HOOKS)
+    engine.rootContext()->setContextProperty("argumentsTrusted", false);
+#else
+    engine.rootContext()->setContextProperty("argumentsTrusted", true);
+#endif
     engine.load(QUrl("qrc:/Main.qml"));
     if (selfTest)
         return finishSelfTest(engine, app.arguments());

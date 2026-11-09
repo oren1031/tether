@@ -11,9 +11,14 @@ isEmpty(TETHER_REPO): TETHER_REPO = oren1031/tether
 TETHER_MIRROR = $$(TETHER_MIRROR)
 isEmpty(TETHER_MIRROR): TETHER_MIRROR = https://tether.orenamir.com
 DEFINES += APP_VERSION=\\\"$$VERSION\\\" TETHER_REPO=\\\"$$TETHER_REPO\\\" TETHER_MIRROR=\\\"$$TETHER_MIRROR\\\"
+# CONFIG+=tether_test: the Android build CI runs in an emulator, the only one
+# that keeps --self-test, --ssh-test and --try-install (a released APK would
+# let any app on the phone start those).
+tether_test: DEFINES += TETHER_TEST_HOOKS
 TARGET = tether
 TEMPLATE = app
 include(third_party/libvterm/libvterm.pri)
+include(hardening.pri)
 # forkpty lives in libutil on glibc before 2.34; Android has it in libc.
 unix:!android:!macx: LIBS += -lutil
 win32 {

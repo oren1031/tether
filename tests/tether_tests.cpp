@@ -1229,6 +1229,37 @@ private slots:
         QCOMPARE(palette[7].toString(), QString("#ffffff"));
     }
 
+    // Servers send whatever they like; the terminal must take any bytes
+    // without crashing (and under the sanitizers, without misusing memory).
+    void terminalSurvivesRandomOutput()
+    {
+        TerminalView view;
+        view.setSize(QSizeF(640, 300));
+        QRandomGenerator random(20261109); // the same bytes on every run
+        const QList<QByteArray> pieces{"\x1b[", "\x1b]", "\x1b[?1049h", "\x1b[?1049l", "\x1b[2J", "\x1b[999;999H", "\x1b[38;2;", "\x1bP",
+                                       "\x1b\\", "\x07", "\x9b", "\x90", "\xff\xfe", "\xe2\x82", "\x1b[1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1m",
+                                       "\x1b]52;c;AAAA\x07", "\x1b[2000000000C", "\x1b[5000S", "\x1b[@", "\x1b[3000M", "\x1b#8", "\x1b(0"};
+        for (int round = 0; round < 400; ++round) {
+            QByteArray data;
+            const int length = 1 + int(random.bounded(2048));
+            while (data.size() < length) {
+                if (random.bounded(3) == 0) {
+                    data += pieces.at(int(random.bounded(uint(pieces.size()))));
+                } else {
+                    data += char(random.bounded(256));
+                }
+            }
+            view.feed(data);
+            if (round % 50 == 0)
+                view.setSize(QSizeF(100 + random.bounded(700), 60 + random.bounded(400)));
+            // Reading the screen back walks every cell.
+            QVERIFY(view.screenText(view.rows()).size() >= 0);
+            QVERIFY(view.lineText(view.scrollbackLines()).size() >= 0);
+        }
+        view.feed("\x1b" "c\x1b[2J\x1b[Hstill works"); // reset, then plain text
+        QVERIFY(view.screenText(view.rows()).contains("still works"));
+    }
+
     void terminalKeepsTheScreenAndHistory()
     {
         TerminalView view;

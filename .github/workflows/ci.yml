@@ -1,0 +1,58 @@
+# Runs on every push and pull request, so a broken commit shows up now and
+# not when a release tag is pushed: the tests, the desktop self-test, and the
+# tests again under AddressSanitizer and UBSan. (The release workflow, on tags,
+# also builds every platform.)
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install build tools and Qt
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git \
+            qt6-base qt6-declarative qt6-svg qt6-wayland openssh picocom libssh
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # As a normal user, like people run Tether: root can open any device,
+      # so the serial permission checks would mean nothing.
+      - name: Test
+        run: |
+          useradd -m builder
+          chown -R builder .
+          su builder -c "bin/test"
+
+      - name: Build and self-test
+        run: su builder -c "bin/build && QT_QPA_PLATFORM=offscreen build/tether --self-test"
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install build tools and Qt
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git \
+            qt6-base qt6-declarative qt6-svg qt6-wayland openssh picocom libssh
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Leaks are left out: Qt and the test processes leave plenty at exit.
+      - name: Test under AddressSanitizer and UBSan
+        run: |
+          useradd -m builder
+          chown -R builder .
+          su builder -c "QMAKE_ARGS=CONFIG+=tether_sanitize ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 bin/test"

@@ -34,10 +34,19 @@ grep -q windowSoftInputMode "$manifest" || \
     sed -i 's#android:launchMode="singleTop"#android:launchMode="singleTop"\n            android:windowSoftInputMode="adjustResize"#' "$manifest"
 grep -q 'windowSoftInputMode="adjustResize"' "$manifest" || { echo "couldn't set the keyboard mode" >&2; exit 1; }
 
+# No backups: keys picked with "Choose..." are copied into the app's files,
+# and Google's backup and phone-to-phone transfer would carry them off.
+if grep -q 'android:allowBackup="' "$manifest"; then
+    sed -i 's/android:allowBackup="[^"]*"/android:allowBackup="false"/' "$manifest"
+else
+    sed -i 's#<application\b#<application android:allowBackup="false"#' "$manifest"
+fi
+grep -q 'android:allowBackup="false"' "$manifest" || { echo "couldn't turn backups off" >&2; exit 1; }
+
 for size in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
     dir="$out/res/mipmap-${size%%:*}"
     mkdir -p "$dir"
     rsvg-convert -w "${size##*:}" -h "${size##*:}" "$svg" -o "$dir/ic_launcher.png"
 done
 echo "Android package sources in $out:"
-grep -E 'package=|android:label|android:icon|minSdk|targetSdk' "$manifest" || true
+grep -E 'package=|android:label|android:icon|allowBackup|minSdk|targetSdk' "$manifest" || true
