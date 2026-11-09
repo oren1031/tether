@@ -710,10 +710,18 @@ TSheet {
                     }
                     Row_ {
                         label: qsTr("Dim panes that aren't focused")
-                        last: true
                         TSwitch {
                             checked: backend.settings.paneDimming
                             onToggled: dialog.set("paneDimming", checked)
+                        }
+                    }
+                    Row_ {
+                        label: qsTr("Ask before pasting several lines")
+                        note: qsTr("When the program would run each line as it's pasted.")
+                        last: true
+                        TSwitch {
+                            checked: backend.settings.confirmPaste
+                            onToggled: dialog.set("confirmPaste", checked)
                         }
                     }
                 }
@@ -998,6 +1006,7 @@ TSheet {
                     Row_ {
                         label: qsTr("API key")
                         note: assistant.keySource === "environment" ? qsTr("Using ANTHROPIC_API_KEY from the environment.")
+                            : assistant.keyStore === "keyring" ? qsTr("Saved in your keyring.")
                             : assistant.keySource === "saved" ? qsTr("Saved in a file only you can read.")
                             : qsTr("Get one at console.anthropic.com.")
                         RowLayout {
@@ -1062,11 +1071,25 @@ TSheet {
             loginName.forceActiveFocus()
         }
 
+        // The keyring answers in its own time (it may ask to be unlocked),
+        // so the sheet closes when identitySaved says the login is in.
+        property bool saving: false
         function save() {
+            if (saving)
+                return
             sheetError = backend.saveIdentity({ id: login ? login.id : "", name: loginName.text, user: loginUser.text,
                                                 identityFile: loginKey.text }, loginPassword.text, forget.checked)
-            if (!sheetError)
-                close()
+            saving = !sheetError
+        }
+        Connections {
+            target: backend
+            enabled: loginSheet.saving
+            function onIdentitySaved(error) {
+                loginSheet.saving = false
+                loginSheet.sheetError = error
+                if (!error)
+                    loginSheet.close()
+            }
         }
 
         contentItem: GridLayout {

@@ -1,5 +1,7 @@
 #include "assistant.h"
 
+#include "credentials.h"
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -12,11 +14,51 @@
 #include <QStandardPaths>
 #include <QTimer>
 
-Assistant::Assistant(const QString &keyFile, QObject *parent)
+#include <functional>
+
+namespace {
+
+// The keyring entry, beside the vault's: service "tether", this identity.
+const QString keyringId = QStringLiteral("anthropic-api-key");
+
+// secret-tool, without waiting for it: a locked keyring asks to be unlocked.
+void secretTool(QObject *owner, const QString &program, const QStringList &args, const QByteArray &input,
+                const std::function<void(bool, const QByteArray &)> &done) {
+    auto *process = new QProcess(owner);
+    auto *limit = new QTimer(process);
+    limit->setSingleShot(true);
+    QObject::connect(limit, &QTimer::timeout, process, &QProcess::kill);
+    auto report = [process, done](bool ok) {
+        if (process->property("reported").toBool())
+            return;
+        process->setProperty("reported", true);
+        const QByteArray out = process->readAllStandardOutput();
+        process->deleteLater();
+        done(ok, out);
+    };
+    QObject::connect(process, &QProcess::finished, owner, [report](int code, QProcess::ExitStatus status) {
+        report(status == QProcess::NormalExit && code == 0);
+    });
+    QObject::connect(process, &QProcess::errorOccurred, owner, [report](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart)
+            report(false);
+    });
+    process->start(program, args);
+    if (!input.isEmpty())
+        process->write(input);
+    process->closeWriteChannel();
+    limit->start(30000);
+}
+
+} // namespace
+
+Assistant::Assistant(const QString &keyFile, QObject *parent, const QString &secretTool)
     : QObject(parent),
       m_keyFile(!keyFile.isEmpty() ? keyFile
                 : QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/tether/anthropic-key"),
+      m_secretTool(keyFile.isEmpty() ? QStandardPaths::findExecutable("secret-tool") : secretTool),
       m_claudeCode(findClaudeCode()) {
+    loadSavedKey();
     connect(&m_process, &QProcess::finished, this, [this](int code, QProcess::ExitStatus status) {
         const QByteArray out = m_process.readAllStandardOutput(), err = m_process.readAllStandardError();
         emit busyChanged();
@@ -62,30 +104,73 @@ QString Assistant::route() const {
     return api ? "api" : code ? "claude-code" : QString();
 }
 
-QString Assistant::key() const {
-    const QString env = qEnvironmentVariable("ANTHROPIC_API_KEY").trimmed();
-    if (!env.isEmpty())
-        return env;
+bool Assistant::hasKeyring() const {
+#ifdef Q_OS_WIN
+    return true; // Windows Credential Manager
+#else
+    return !m_secretTool.isEmpty();
+#endif
+}
+
+// The saved key lives in the keyring, like the vault's passwords. A key an
+// older Tether left in its file moves there, and the file goes once the
+// keyring has it; the file stays the place only where there's no keyring.
+void Assistant::loadSavedKey() {
     QFile file(m_keyFile);
-    return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()).trimmed() : QString();
+    if (file.open(QIODevice::ReadOnly))
+        m_fileKey = QString::fromUtf8(file.readAll()).trimmed();
+    file.close();
+    if (!hasKeyring())
+        return;
+#ifdef Q_OS_WIN
+    m_keyringKey = Credentials::lookup(keyringId);
+    if (!m_fileKey.isEmpty())
+        keepInKeyring(m_keyringKey.isEmpty() ? m_fileKey : m_keyringKey);
+#else
+    secretTool(this, m_secretTool, {"lookup", "service", "tether", "identity", keyringId}, {},
+               [this](bool ok, const QByteArray &out) {
+                   if (!m_unsavedKey.isEmpty() || !m_keyringKey.isEmpty())
+                       return; // a key was saved meanwhile
+                   const QString found = ok ? QString::fromUtf8(out).trimmed() : QString();
+                   if (!found.isEmpty()) {
+                       m_keyringKey = found;
+                       m_fileKey.clear();
+                       QFile::remove(m_keyFile);
+                   } else if (!m_fileKey.isEmpty()) {
+                       keepInKeyring(m_fileKey);
+                   }
+                   emit keyChanged();
+                   emit providerChanged();
+               });
+#endif
 }
 
-QString Assistant::keySource() const {
-    if (!qEnvironmentVariable("ANTHROPIC_API_KEY").trimmed().isEmpty())
-        return "environment";
-    return key().isEmpty() ? QString() : "saved";
-}
-
-QString Assistant::saveKey(const QString &input) {
-    const QString value = input.trimmed();
-    if (value.isEmpty()) {
-        QFile::remove(m_keyFile);
+// Stores the key in the keyring; if the keyring won't take it, in the file.
+void Assistant::keepInKeyring(const QString &value) {
+    auto stored = [this, value](bool ok) {
+        if (m_unsavedKey != value)
+            return; // replaced or removed while this one was being stored
+        m_unsavedKey.clear();
+        if (ok) {
+            m_keyringKey = value;
+            m_fileKey.clear();
+            QFile::remove(m_keyFile);
+        } else {
+            writeKeyFile(value);
+        }
         emit keyChanged();
         emit providerChanged();
-        return {};
-    }
-    if (value.contains(QRegularExpression("\\s")))
-        return tr("That doesn't look like an API key.");
+    };
+    m_unsavedKey = value;
+#ifdef Q_OS_WIN
+    stored(Credentials::store(keyringId, "Tether: Anthropic API key", value).isEmpty());
+#else
+    secretTool(this, m_secretTool, {"store", "--label=Tether: Anthropic API key", "service", "tether", "identity", keyringId},
+               value.toUtf8(), [stored](bool ok, const QByteArray &) { stored(ok); });
+#endif
+}
+
+QString Assistant::writeKeyFile(const QString &value) {
     QDir().mkpath(QFileInfo(m_keyFile).absolutePath());
     QSaveFile file(m_keyFile);
     if (!file.open(QIODevice::WriteOnly))
@@ -94,6 +179,56 @@ QString Assistant::saveKey(const QString &input) {
     file.write(value.toUtf8());
     if (!file.commit())
         return tr("Couldn't save the key: %1").arg(file.errorString());
+    m_fileKey = value;
+    return {};
+}
+
+QString Assistant::key() const {
+    const QString env = qEnvironmentVariable("ANTHROPIC_API_KEY").trimmed();
+    if (!env.isEmpty())
+        return env;
+    return !m_unsavedKey.isEmpty() ? m_unsavedKey : !m_keyringKey.isEmpty() ? m_keyringKey : m_fileKey;
+}
+
+QString Assistant::keySource() const {
+    if (!qEnvironmentVariable("ANTHROPIC_API_KEY").trimmed().isEmpty())
+        return "environment";
+    return key().isEmpty() ? QString() : "saved";
+}
+
+QString Assistant::keyStore() const {
+    if (keySource() != "saved")
+        return {};
+    return !m_unsavedKey.isEmpty() || !m_keyringKey.isEmpty() ? "keyring" : "file";
+}
+
+QString Assistant::saveKey(const QString &input) {
+    const QString value = input.trimmed();
+    if (value.isEmpty()) {
+        const bool inKeyring = !m_keyringKey.isEmpty() || !m_unsavedKey.isEmpty();
+        m_keyringKey.clear();
+        m_unsavedKey.clear();
+        m_fileKey.clear();
+        QFile::remove(m_keyFile);
+        if (inKeyring) {
+#ifdef Q_OS_WIN
+            Credentials::remove(keyringId);
+#else
+            secretTool(this, m_secretTool, {"clear", "service", "tether", "identity", keyringId}, {},
+                       [](bool, const QByteArray &) {});
+#endif
+        }
+        emit keyChanged();
+        emit providerChanged();
+        return {};
+    }
+    if (value.contains(QRegularExpression("\\s")))
+        return tr("That doesn't look like an API key.");
+    if (hasKeyring()) {
+        keepInKeyring(value);
+    } else if (const QString error = writeKeyFile(value); !error.isEmpty()) {
+        return error;
+    }
     emit keyChanged();
     emit providerChanged();
     return {};
@@ -165,9 +300,11 @@ QString Assistant::findClaudeCode() {
     return {};
 }
 
-QStringList Assistant::claudeCodeArguments(const QString &request, const QVariantMap &context) {
+QStringList Assistant::claudeCodeArguments() {
     // One turn, no tools, no MCP servers, nothing saved: just the answer.
-    return {"-p", userMessage(request, context),
+    // With no prompt among the arguments, print mode reads it from standard
+    // input, where the process list doesn't show it.
+    return {"-p",
             "--output-format", "json",
             "--json-schema", QString::fromUtf8(QJsonDocument(answerSchema()).toJson(QJsonDocument::Compact)),
             "--system-prompt", systemPrompt(),
@@ -205,7 +342,8 @@ void Assistant::askClaudeCode(const QString &request, const QVariantMap &context
     if (m_process.state() != QProcess::NotRunning)
         return;
     m_process.setWorkingDirectory(QDir::tempPath());
-    m_process.start(m_claudeCode, claudeCodeArguments(request, context));
+    m_process.start(m_claudeCode, claudeCodeArguments());
+    m_process.write(userMessage(request, context).toUtf8());
     m_process.closeWriteChannel();
     emit busyChanged();
 }

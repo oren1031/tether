@@ -57,6 +57,7 @@
         <file alias="icons/sparkle.svg">icons/sparkle.svg</file>
         <file alias="icons/upload.svg">icons/upload.svg</file>
         <file alias="UpdateSheet.qml">UpdateSheet.qml</file>
+        <file alias="SyncReview.qml">SyncReview.qml</file>
         <file alias="i18n/en.json">i18n/en.json</file>
         <file alias="i18n/he.json">i18n/he.json</file>
     </qresource>

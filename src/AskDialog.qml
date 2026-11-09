@@ -170,6 +170,24 @@ TSheet {
             }
         }
 
+        // What leaves this computer, said before anything is asked.
+        Text {
+            visible: dialog.command === "" && assistant.route !== ""
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            font.family: Style.fontFamily
+            font.pixelSize: Style.smallFontSize
+            color: Style.secondaryLabel
+            text: {
+                const c = dialog.context()
+                return c.kind === "ssh" && c.user
+                     ? qsTr("Sent to Claude: your request, and that this is an ssh session to %1 as %2. Nothing on the terminal's screen is sent.").arg(c.host).arg(c.user)
+                     : c.kind === "ssh"
+                     ? qsTr("Sent to Claude: your request, and that this is an ssh session to %1. Nothing on the terminal's screen is sent.").arg(c.host)
+                     : qsTr("Sent to Claude: your request and the kind of session. Nothing on the terminal's screen is sent.")
+            }
+        }
+
         Text {
             Layout.fillWidth: true
             wrapMode: Text.Wrap

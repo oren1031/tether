@@ -561,6 +561,9 @@ ApplicationWindow {
 
     AskDialog { id: askDialog }
 
+    // What the sync folder wants to change that waits for a yes.
+    SyncReview { anchors.fill: parent; z: 20 }
+
     UpdateSheet {
         id: updateSheet
         onInstallRequested: command => win.installUpdate(command)

@@ -9,6 +9,7 @@ QString store(const QString &id, const QString &label, const QString &secret); /
 QString lookup(const QString &id);
 void remove(const QString &id);
 // ssh's askpass, answered by tether.exe itself: prints the vault's secret
-// for password and passphrase prompts. Returns the exit code.
+// for password and passphrase prompts, and asks the user in a window whether
+// to trust a host key ssh hasn't seen. Returns the exit code.
 int askpass(const QString &prompt);
 }

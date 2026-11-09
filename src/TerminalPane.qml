@@ -71,22 +71,46 @@ FocusScope {
                     send(backend.snippetPayload(s, { host: profile.host || "", user: profile.user || "" }))
     }
 
+    // The backend's answers carry this, so each pane hears only its own.
+    readonly property string token: "pane-" + Math.random().toString(36).slice(2)
+
     Timer {
         id: startupWait
         property int tries: 0
         interval: 700
         repeat: true
+        function ready() {
+            const profile = pane.launch.profile || {}
+            stop()
+            startupSettle.interval = profile.kind === "ssh" && backend.settings.shareConnections ? 900 : 2500
+            startupSettle.start()
+        }
         onTriggered: {
             const profile = pane.launch.profile || {}
             if (pane.ended || ++tries > 130) {
                 stop()
                 return
             }
-            if (profile.kind === "ssh" && !backend.connectionReady(profile))
+            // ssh is asked without waiting for it; onConnectionChecked hears.
+            if (profile.kind === "ssh")
+                backend.checkConnection(profile, pane.token)
+            else
+                ready()
+        }
+    }
+    Connections {
+        target: backend
+        function onConnectionChecked(token, ready) {
+            if (token === pane.token && ready && startupWait.running)
+                startupWait.ready()
+        }
+        function onHostKeyForgotten(token, error) {
+            if (token !== pane.token)
                 return
-            stop()
-            startupSettle.interval = profile.kind === "ssh" && backend.settings.shareConnections ? 900 : 2500
-            startupSettle.start()
+            if (error)
+                forgetError.text = error
+            else
+                pane.reconnectRequested()
         }
     }
     Timer {
@@ -130,7 +154,10 @@ FocusScope {
                 }
             }
             onActiveFocusChanged: if (activeFocus && pane.page) pane.page.activePane = pane
-            onHostKeyQuestion: (host, keyType, fingerprint, changed) => trustSheet.ask(host, keyType, fingerprint, changed)
+            confirmPaste: backend.settings.confirmPaste
+            onHostKeyQuestion: (host, keyType, fingerprint, changed, oldFingerprints) =>
+                trustSheet.ask(host, keyType, fingerprint, changed, oldFingerprints)
+            onPasteQuestion: (text, lines) => pasteSheet.ask(text, lines)
 
             // A thin scroll bar for the history, shown while there is some.
             Rectangle {
@@ -244,11 +271,8 @@ FocusScope {
                 kind: "danger"
                 text: qsTr("Forget old key")
                 onClicked: {
-                    const error = backend.forgetHostKey(pane.launch.profile || {})
-                    if (error)
-                        forgetError.text = error
-                    else
-                        pane.reconnectRequested()
+                    forgetError.text = ""
+                    backend.forgetHostKey(pane.launch.profile || {}, pane.token)
                 }
             }
             TButton {
@@ -363,16 +387,21 @@ FocusScope {
         property string keyType
         property string fingerprint
         property bool changed: false
+        property var oldFingerprints: []
         property bool answered: false
+        // A changed key is only trusted with the host's name typed out.
+        readonly property bool confirmed: !changed || typedHost.text.trim().toLowerCase() === host.toLowerCase()
         width: Math.min(460, Overlay.overlay ? Overlay.overlay.width - 32 : 460)
         title: changed ? qsTr("%1's key has changed").arg(host) : qsTr("Trust %1?").arg(host)
         closePolicy: Popup.NoAutoClose
 
-        function ask(h, type, print, isChanged) {
+        function ask(h, type, print, isChanged, oldPrints) {
             host = h
             keyType = type
             fingerprint = print
             changed = isChanged
+            oldFingerprints = oldPrints || []
+            typedHost.text = ""
             answered = false
             open()
         }
@@ -387,12 +416,14 @@ FocusScope {
 
         contentItem: ColumnLayout {
             spacing: 10
-            // Enter trusts and Escape declines, from any keyboard.
+            // For a first connection Enter trusts and Escape declines, from
+            // any keyboard. A changed key has no shortcut to yes: Enter and
+            // Escape both decline.
             Item {
                 id: trustKeys
                 focus: true
-                Keys.onReturnPressed: trustSheet.answer(true)
-                Keys.onEnterPressed: trustSheet.answer(true)
+                Keys.onReturnPressed: trustSheet.answer(!trustSheet.changed)
+                Keys.onEnterPressed: trustSheet.answer(!trustSheet.changed)
                 Keys.onEscapePressed: trustSheet.answer(false)
             }
             Text {
@@ -402,7 +433,7 @@ FocusScope {
                 font.pixelSize: Style.fontSize
                 color: trustSheet.changed ? Style.orange : Style.secondaryLabel
                 text: trustSheet.changed
-                      ? qsTr("The server answered with a different key than last time. That happens when a server is reinstalled, but it can also mean someone is intercepting the connection. Only trust the new key if you expected this.")
+                      ? qsTr("The server answered with a different key than last time. That happens when a server is reinstalled, but it can also mean someone is intercepting the connection. Don't connect unless you expected this.")
                       : qsTr("This is the first connection to this server. Check that the fingerprint matches the server's, then trust it; Tether remembers it from now on.")
             }
             Rectangle {
@@ -418,20 +449,104 @@ FocusScope {
                     font.family: Style.monoFamily
                     font.pixelSize: Style.smallFontSize + 1
                     color: Style.label
-                    text: trustSheet.keyType + "\n" + trustSheet.fingerprint
+                    text: !trustSheet.changed ? trustSheet.keyType + "\n" + trustSheet.fingerprint
+                          : qsTr("Saved key") + "\n" + (trustSheet.oldFingerprints.length ? trustSheet.oldFingerprints.join("\n") : "?")
+                            + "\n\n" + qsTr("New key") + "\n" + trustSheet.keyType + " " + trustSheet.fingerprint
                 }
+            }
+            Text {
+                visible: trustSheet.changed
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                font.family: Style.fontFamily
+                font.pixelSize: Style.fontSize
+                color: Style.secondaryLabel
+                text: qsTr("To replace the saved key, type the host's name (%1).").arg(trustSheet.host)
+            }
+            TField {
+                id: typedHost
+                visible: trustSheet.changed
+                Layout.fillWidth: true
+                placeholderText: trustSheet.host
+                inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
+                Keys.onEscapePressed: trustSheet.answer(false)
             }
         }
         footer: RowLayout {
             spacing: 10
             Item { Layout.fillWidth: true }
-            TButton { Layout.bottomMargin: 20; text: qsTr("Don't connect"); onClicked: trustSheet.answer(false) }
+            TButton {
+                Layout.bottomMargin: 20
+                kind: trustSheet.changed ? "primary" : "default"
+                text: qsTr("Don't connect")
+                onClicked: trustSheet.answer(false)
+            }
             TButton {
                 Layout.bottomMargin: 20
                 Layout.rightMargin: 20
                 kind: trustSheet.changed ? "danger" : "primary"
+                enabled: trustSheet.confirmed
                 text: trustSheet.changed ? qsTr("Trust the new key") : qsTr("Trust and connect")
-                onClicked: trustSheet.answer(true)
+                onClicked: if (trustSheet.confirmed) trustSheet.answer(true)
+            }
+        }
+    }
+
+    // A paste that would run several lines at once is shown first.
+    TSheet {
+        id: pasteSheet
+        parent: Overlay.overlay
+        property string text
+        property int lines: 0
+        width: Math.min(520, Overlay.overlay ? Overlay.overlay.width - 32 : 520)
+        title: qsTr("Paste %n lines?", "", lines)
+        subtitle: qsTr("This program runs each line as it arrives.")
+
+        function ask(pasted, count) {
+            text = pasted
+            lines = count
+            open()
+            pasteCancel.forceActiveFocus()
+        }
+        function paste() {
+            const pasted = text
+            close()
+            if (pane.terminal)
+                pane.terminal.paste(pasted)
+        }
+        onClosed: {
+            text = ""
+            pane.focusTerminal()
+        }
+
+        contentItem: Rectangle {
+            implicitHeight: Math.min(220, pastePreview.implicitHeight + 20)
+            radius: 8
+            color: Qt.rgba(0, 0, 0, 0.25)
+            clip: true
+            Text {
+                id: pastePreview
+                anchors.fill: parent
+                anchors.margins: 10
+                wrapMode: Text.WrapAnywhere
+                elide: Text.ElideRight
+                textFormat: Text.PlainText
+                font.family: Style.monoFamily
+                font.pixelSize: Style.smallFontSize + 1
+                color: Style.label
+                text: pasteSheet.text.replace(/\r/g, "\n")
+            }
+        }
+        footer: RowLayout {
+            spacing: 10
+            Item { Layout.fillWidth: true }
+            TButton { id: pasteCancel; Layout.bottomMargin: 20; text: qsTr("Cancel"); onClicked: pasteSheet.close() }
+            TButton {
+                Layout.bottomMargin: 20
+                Layout.rightMargin: 20
+                kind: "primary"
+                text: qsTr("Paste")
+                onClicked: pasteSheet.paste()
             }
         }
     }

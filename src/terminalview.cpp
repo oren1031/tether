@@ -52,7 +52,11 @@ struct TerminalCallbacks {
     }
     static int clear(void *user) { return static_cast<TerminalView *>(user)->onClearScrollback(); }
     static void output(const char *bytes, size_t length, void *user) {
-        static_cast<TerminalView *>(user)->write(QByteArray(bytes, int(length)));
+        auto *view = static_cast<TerminalView *>(user);
+        if (view->m_capture)
+            view->m_capture->append(bytes, qsizetype(length));
+        else
+            view->write(QByteArray(bytes, int(length)));
     }
 };
 
@@ -508,11 +512,47 @@ void TerminalView::copyClipboard() {
         QGuiApplication::clipboard()->setText(text);
 }
 
-void TerminalView::pasteClipboard() {
-    QString text = QGuiApplication::clipboard()->text();
+QString TerminalView::cleanPaste(const QString &text) {
+    QString clean = text;
+    clean.replace("\r\n", "\r").replace('\n', '\r');
+    // Tab and Enter stay; ESC, the other C0 and C1 controls, and DEL go.
+    clean.removeIf([](QChar c) {
+        const ushort u = c.unicode();
+        return (u < 0x20 && u != '\t' && u != '\r') || (u >= 0x7f && u <= 0x9f);
+    });
+    return clean;
+}
+
+// Whether the program asked for bracketed paste. libvterm keeps that to
+// itself, but it only writes the opening code when the program did; the
+// code is caught here and not sent.
+bool TerminalView::bracketedPaste() {
+    QByteArray opening;
+    m_capture = &opening;
+    vterm_keyboard_start_paste(m_vt);
+    m_capture = nullptr;
+    return !opening.isEmpty();
+}
+
+void TerminalView::pasteClipboard() { offerPaste(QGuiApplication::clipboard()->text()); }
+
+void TerminalView::offerPaste(const QString &raw) {
+    const QString text = cleanPaste(raw);
     if (text.isEmpty())
         return;
-    text.replace("\r\n", "\r").replace('\n', '\r');
+    // A shell with bracketed paste shows pasted lines before running them.
+    // Anything else runs each line as it lands, so that is asked about.
+    if (m_confirmPaste && text.contains('\r') && !bracketedPaste()) {
+        emit pasteQuestion(text, int(text.count('\r')) + (text.endsWith('\r') ? 0 : 1));
+        return;
+    }
+    paste(text);
+}
+
+void TerminalView::paste(const QString &raw) {
+    const QString text = cleanPaste(raw);
+    if (text.isEmpty())
+        return;
     scrollToBottom();
     // Bracketed paste, when the program asks for it, so a pasted command
     // isn't run before it's looked at.
@@ -954,6 +994,11 @@ void TerminalView::typeCharacters(const QString &text) {
             vterm_keyboard_key(m_vt, VTERM_KEY_ENTER, takeSticky());
             continue;
         }
+        // Keyboards press Escape and Ctrl combinations as keys. A control
+        // character inside text came from somewhere else (the keyboard's
+        // clipboard, a suggestion) and isn't typed.
+        if ((c < 0x20 && c != '\t' && c != '\r') || (c >= 0x7f && c <= 0x9f))
+            continue;
         uint32_t ch = uint32_t(c);
         const VTermModifier mod = takeSticky();
         if ((mod & VTERM_MOD_CTRL) && ch >= 'A' && ch <= 'Z')
@@ -977,7 +1022,24 @@ void TerminalView::inputMethodEvent(QInputMethodEvent *event) {
         for (int i = 0; i < erase; ++i)
             vterm_keyboard_key(m_vt, VTERM_KEY_BACKSPACE, VTERM_MOD_NONE);
     }
-    const QString target = event->commitString() + event->preeditString();
+    // A keyboard's own clipboard pastes by committing the text whole. More
+    // than one line at once is a paste, not typing, and is treated as one:
+    // cleaned, and asked about where each line would run as it lands.
+    const QString committed = event->commitString();
+    const qsizetype lineBreak = committed.indexOf('\n');
+    if (lineBreak >= 0 && lineBreak < committed.size() - 1) {
+        clearSelection();
+        scrollToBottom();
+        for (qsizetype i = m_composing.toUcs4().size(); i > 0; --i)
+            vterm_keyboard_key(m_vt, VTERM_KEY_BACKSPACE, VTERM_MOD_NONE);
+        m_composing.clear();
+        offerPaste(committed);
+        typeCharacters(event->preeditString());
+        m_composing = event->preeditString();
+        event->accept();
+        return;
+    }
+    const QString target = committed + event->preeditString();
     int common = 0;
     while (common < m_composing.size() && common < target.size() && m_composing.at(common) == target.at(common))
         ++common;
@@ -1094,14 +1156,7 @@ void TerminalView::mousePressEvent(QMouseEvent *event) {
     }
     if (event->button() == Qt::MiddleButton) {
         // Paste the primary selection, as X11 and Wayland terminals do.
-        QString text = QGuiApplication::clipboard()->text(QClipboard::Selection);
-        if (!text.isEmpty()) {
-            text.replace("\r\n", "\r").replace('\n', '\r');
-            scrollToBottom();
-            vterm_keyboard_start_paste(m_vt);
-            write(text.toUtf8());
-            vterm_keyboard_end_paste(m_vt);
-        }
+        offerPaste(QGuiApplication::clipboard()->text(QClipboard::Selection));
         event->accept();
         return;
     }

@@ -40,6 +40,9 @@ class TerminalView : public QQuickPaintedItem {
     Q_PROPERTY(bool stickyCtrl READ stickyCtrl WRITE setStickyCtrl NOTIFY stickyChanged)
     Q_PROPERTY(bool stickyAlt READ stickyAlt WRITE setStickyAlt NOTIFY stickyChanged)
     Q_PROPERTY(bool secretInput READ secretInput NOTIFY secretInputChanged)
+    // Ask (pasteQuestion) before a paste of several lines into a program
+    // that would run each line as it arrives.
+    Q_PROPERTY(bool confirmPaste READ confirmPaste WRITE setConfirmPaste NOTIFY optionsChanged)
     // Qt for Android only passes an on-screen keyboard's text to items that
     // have a property with this name, as its own text fields do; without it
     // letters never arrive, only the keys sent as key presses (digits, Enter).
@@ -95,7 +98,17 @@ public:
     bool stickyAlt() const { return m_stickyAlt; }
     void setStickyAlt(bool on) { if (on != m_stickyAlt) { m_stickyAlt = on; emit stickyChanged(); } }
     Q_INVOKABLE void copyClipboard();
+    // Pastes the clipboard: cleaned of control codes, and asked about
+    // first (pasteQuestion) when it would run several lines unseen.
     Q_INVOKABLE void pasteClipboard();
+    // Pastes text without asking; the answer to pasteQuestion.
+    Q_INVOKABLE void paste(const QString &text);
+    // Pasted text as it is typed: line breaks become Enter, and escape and
+    // other control characters are dropped, so text from a web page can't
+    // send the terminal commands or close the bracketed paste early.
+    static QString cleanPaste(const QString &text);
+    bool confirmPaste() const { return m_confirmPaste; }
+    void setConfirmPaste(bool on) { if (on != m_confirmPaste) { m_confirmPaste = on; emit optionsChanged(); } }
     Q_INVOKABLE void clearScrollback();
     // The last lines on screen as plain text.
     Q_INVOKABLE QString screenText(int lines = 40) const;
@@ -119,7 +132,11 @@ signals:
     void finished(int exitCode);
     void bell();
     void stickyChanged();
-    void hostKeyQuestion(const QString &host, const QString &keyType, const QString &fingerprint, bool changed);
+    // oldFingerprints: for a changed key, the saved keys it replaces.
+    void hostKeyQuestion(const QString &host, const QString &keyType, const QString &fingerprint, bool changed,
+                         const QStringList &oldFingerprints);
+    // A paste waiting for a yes: the cleaned text and how many lines it has.
+    void pasteQuestion(const QString &text, int lines);
     void secretInputChanged();
 
 protected:
@@ -216,6 +233,10 @@ private:
     bool m_stickyCtrl = false;
     bool m_stickyAlt = false;
     VTermModifier takeSticky();
+    void offerPaste(const QString &text);
+    bool bracketedPaste();
+    bool m_confirmPaste = true;
+    QByteArray *m_capture = nullptr; // takes libvterm's output instead of the program
     void typeCharacters(const QString &text);
     QString m_composing;  // composing text from a touch keyboard, already typed
     bool m_secretInput = false;  // a password prompt: the keyboard goes to password mode

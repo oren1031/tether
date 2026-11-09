@@ -164,6 +164,16 @@ void SftpBrowser::cancel() {
 void SftpBrowser::run(const QStringList &lines, const QString &status, const QStringList &downloadedNames) {
     if (busy() || m_command.isEmpty())
         return;
+    // sftp reads its commands a line at a time, and quoting can't carry a
+    // line break: the rest of such a name would be read as the next command,
+    // and a line starting with "!" runs a program on this computer.
+    QStringList checked = lines;
+    checked << m_path;
+    for (const QString &line : std::as_const(checked))
+        if (line.contains('\n') || line.contains('\r')) {
+            setError(tr("Names with a line break in them can't be used here."));
+            return;
+        }
     QStringList batch;
     if (!m_path.isEmpty())
         batch << "cd " + quote(m_path);

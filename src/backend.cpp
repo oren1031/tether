@@ -59,6 +59,84 @@ QStringList optionLines(const QVariant &value) {
     return lines;
 }
 
+// Sync: items carry when they were last saved, so of two computers' edits
+// the newer one is kept. A stamp from the future (a wrong clock, or a file
+// written to always win) counts as now.
+qint64 modifiedOf(const QVariantMap &item) {
+    return std::min<qint64>(item.value("modified").toLongLong(), QDateTime::currentMSecsSinceEpoch() + 300000);
+}
+
+// Items are compared by what they say, not by when they were saved.
+QVariantMap withoutStamp(QVariantMap item) {
+    item.remove("modified");
+    return item;
+}
+
+QVariantMap withStamp(QVariantMap item) {
+    item.insert("modified", QDateTime::currentMSecsSinceEpoch());
+    return item;
+}
+
+// ssh options that run a program on this computer, load code into ssh, or
+// turn off the checks of who the server is. Lower case; ssh ignores case.
+const QStringList riskyOptionNames{
+    "proxycommand", "localcommand", "permitlocalcommand", "knownhostscommand", "stricthostkeychecking",
+    "userknownhostsfile", "globalknownhostsfile", "pkcs11provider", "securitykeyprovider", "xauthlocation",
+    "forwardagent", "nohostauthenticationforlocalhost", "hostkeyalias", "verifyhostkeydns"};
+
+// What a synced copy may not change on its own: where a host connects, as
+// whom, with what options, and what is typed into it.
+const QHash<QString, QStringList> guardedFields{
+    {"host", {"kind", "host", "port", "user", "options", "jumpHost", "identityFile", "identityId", "forwards",
+              "startupSnippets", "device"}},
+    {"snippet", {"text", "run"}},
+    {"login", {"user", "identityFile"}}};
+
+bool guardedDiffers(const QString &type, const QVariantMap &a, const QVariantMap &b) {
+    for (const QString &field : guardedFields.value(type))
+        if (a.value(field) != b.value(field))
+            return true;
+    return false;
+}
+
+int indexOfId(const QVariantList &list, const QString &id) {
+    for (int i = 0; i < list.size(); ++i)
+        if (list[i].toMap().value("id").toString() == id)
+            return i;
+    return -1;
+}
+
+// Only the fields a snippet or a login has, whatever file they came from.
+QVariantMap cleanSnippet(const QVariantMap &s) {
+    QVariantMap out{{"id", s.value("id").toString()}, {"name", s.value("name").toString().trimmed()},
+                    {"text", s.value("text").toString()}, {"run", s.value("run").toBool()}};
+    if (s.contains("modified"))
+        out.insert("modified", s.value("modified").toLongLong());
+    return out;
+}
+
+QVariantMap cleanLogin(const QVariantMap &l) {
+    QVariantMap out{{"id", l.value("id").toString()}, {"name", l.value("name").toString().trimmed()},
+                    {"user", l.value("user").toString().trimmed()},
+                    {"identityFile", l.value("identityFile").toString().trimmed()},
+                    {"hasPassword", l.value("hasPassword").toBool()}};
+    if (l.contains("modified"))
+        out.insert("modified", l.value("modified").toLongLong());
+    return out;
+}
+
+// What's wrong with a vault login, or nothing: for the dialog and for sync.
+QString loginProblem(const QVariantMap &login) {
+    if (login.value("name").toString().isEmpty())
+        return Backend::tr("Give the login a name.");
+    const QString user = login.value("user").toString();
+    if (!user.isEmpty() && !userPattern.match(user).hasMatch())
+        return Backend::tr("“%1” isn't a valid user name.").arg(user);
+    if (login.value("identityFile").toString().contains('\n'))
+        return Backend::tr("The key file path can't span lines.");
+    return {};
+}
+
 QString safeFileName(const QString &name) {
     QString safe = name;
     safe.replace(QRegularExpression("[^A-Za-z0-9._-]+"), "_");
@@ -110,6 +188,7 @@ QVariantMap Backend::defaultSettings() {
             {"paneDimming", true},
             {"shell", ""},                // empty uses $SHELL
             {"confirmQuit", true},
+            {"confirmPaste", true},       // ask before a paste that would run several lines at once
             {"localTmux", false},         // local shells run inside tmux, so they outlive Tether
             {"shareConnections", true},   // ssh ControlMaster: one login per host for panes and files
             {"syncFolder", ""},
@@ -286,6 +365,9 @@ QVariantMap Backend::clean(const QVariantMap &p) {
     // A pane split from a kept-alive session gets its own tmux session.
     if (!p.value("tmuxSession").toString().isEmpty())
         out.insert("tmuxSession", p.value("tmuxSession").toString());
+    // When it was last saved, for sync to keep the newer of two edits.
+    if (p.contains("modified"))
+        out.insert("modified", p.value("modified").toLongLong());
     return out;
 }
 
@@ -381,13 +463,10 @@ QVariantMap Backend::launch(const QVariantMap &profile) const {
                 const auto match = optionPattern.match(line);
                 args << "-o" << match.captured(1) + "=" + match.captured(2).trimmed();
             }
-#ifdef Q_OS_WIN
-            // tether.exe can answer password prompts but not "trust this new
-            // host?", so a first-seen host key is accepted; a changed one is
-            // still refused.
-            if (!environment.isEmpty())
-                args << "-o" << "StrictHostKeyChecking=accept-new";
-#endif
+            // On Windows, where tether.exe answers ssh's questions for a host
+            // with a saved password, "trust this new host?" is shown as a
+            // dialog with the fingerprint (Credentials::askpass); nothing is
+            // accepted without being asked.
             // After the user's options, since ssh keeps the first value it
             // reads for each. Keepalives notice a dead link in under a minute.
             if (p["persistent"].toBool() || p["reconnect"].toBool())
@@ -515,28 +594,61 @@ QVariantMap Backend::importKey(const QUrl &url) {
 #endif
 }
 
-QString Backend::forgetHostKey(const QVariantMap &profile) const {
+void Backend::runTool(const QString &program, const QStringList &args, const QByteArray &input, int timeoutMs,
+                      const std::function<void(bool, const QString &)> &done) {
+    auto *process = new QProcess(this);
+    auto *limit = new QTimer(process);
+    limit->setSingleShot(true);
+    connect(limit, &QTimer::timeout, process, &QProcess::kill);
+    // A program that isn't there reports an error and never finishes; one
+    // that is killed for taking too long finishes as crashed.
+    auto report = [process, done](bool ok) {
+        if (process->property("reported").toBool())
+            return;
+        process->setProperty("reported", true);
+        const QString error = QString::fromUtf8(process->readAllStandardError()).trimmed();
+        process->deleteLater();
+        if (done)
+            done(ok, error);
+    };
+    connect(process, &QProcess::finished, this, [report](int code, QProcess::ExitStatus status) {
+        report(status == QProcess::NormalExit && code == 0);
+    });
+    connect(process, &QProcess::errorOccurred, this, [report](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart)
+            report(false);
+    });
+    process->start(program, args);
+    if (!input.isEmpty())
+        process->write(input);
+    process->closeWriteChannel();
+    limit->start(timeoutMs);
+}
+
+void Backend::forgetHostKey(const QVariantMap &profile, const QString &token) {
+    // Always answered after this call returns, so callers have one path.
+    auto answer = [this, token](const QString &error) {
+        QMetaObject::invokeMethod(this, [this, token, error] { emit hostKeyForgotten(token, error); }, Qt::QueuedConnection);
+    };
     const QVariantMap p = clean(profile);
     const QString host = p["host"].toString();
     const int port = p["port"].toInt();
     if (host.isEmpty() || !hostPattern.match(host).hasMatch())
-        return tr("No host to forget.");
+        return answer(tr("No host to forget."));
 #ifdef TETHER_LIBSSH
     if (tool("ssh").isEmpty()) {
         const QString file = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/known_hosts";
-        return SshSession::forgetHost(file, host, port) ? QString() : tr("There was no saved key for %1.").arg(host);
+        return answer(SshSession::forgetHost(file, host, port) ? QString() : tr("There was no saved key for %1.").arg(host));
     }
 #endif
     // ssh-keygen knows hashed known_hosts lines too.
     const QString keygen = tool("ssh-keygen");
     if (keygen.isEmpty())
-        return tr("ssh-keygen isn't installed.");
-    QProcess process;
-    process.start(keygen, {"-R", port == 22 ? host : QString("[%1]:%2").arg(host).arg(port)});
-    process.closeWriteChannel();
-    if (!process.waitForFinished(10000) || process.exitCode() != 0)
-        return tr("Couldn't remove the old key: %1").arg(QString::fromUtf8(process.readAllStandardError()).trimmed());
-    return {};
+        return answer(tr("ssh-keygen isn't installed."));
+    runTool(keygen, {"-R", port == 22 ? host : QString("[%1]:%2").arg(host).arg(port)}, {}, 10000,
+            [this, token](bool ok, const QString &error) {
+                emit hostKeyForgotten(token, ok ? QString() : tr("Couldn't remove the old key: %1").arg(error));
+            });
 }
 
 QString Backend::newLogPath(const QString &title) const {
@@ -640,17 +752,24 @@ void Backend::refreshTmux() {
                                "#{session_name}\t#{session_attached}\t#{session_created}\t#{pane_current_path}"});
 }
 
-bool Backend::connectionReady(const QVariantMap &profile) const {
+void Backend::checkConnection(const QVariantMap &profile, const QString &token) {
     const QVariantMap p = resolved(clean(profile));
-    if (p["kind"] != "ssh" || p["transport"] == "mosh" || !sharesConnections())
-        return true;
+    if (p["kind"] != "ssh" || p["transport"] == "mosh" || !sharesConnections()) {
+        QMetaObject::invokeMethod(this, [this, token] { emit connectionChecked(token, true); }, Qt::QueuedConnection);
+        return;
+    }
+    // One question per pane at a time; a slow answer isn't asked again.
+    if (m_checking.contains(token))
+        return;
     QStringList args{"-O", "check", "-o", "ControlPath=" + controlPath(), "-p", QString::number(p["port"].toInt())};
     if (!p["user"].toString().isEmpty())
         args << "-l" << p["user"].toString();
     args << "--" << p["host"].toString();
-    QProcess check;
-    check.start(tool("ssh"), args);
-    return check.waitForFinished(1500) && check.exitStatus() == QProcess::NormalExit && check.exitCode() == 0;
+    m_checking << token;
+    runTool(tool("ssh"), args, {}, 1500, [this, token](bool ok, const QString &) {
+        m_checking.removeAll(token);
+        emit connectionChecked(token, ok);
+    });
 }
 
 QVariantMap Backend::sftpCommand(const QVariantMap &profile) const {
@@ -684,16 +803,6 @@ QVariantMap Backend::sftpCommand(const QVariantMap &profile) const {
 }
 
 // ── Vault ──────────────────────────────────────────────────────────────────
-
-// Runs with stdin closed and a time limit, so a locked keyring's prompt can't
-// hang the app.
-static void clearSecret(const QString &secretTool, const QString &id) {
-    QProcess clear;
-    clear.start(secretTool, {"clear", "service", "tether", "identity", id});
-    clear.closeWriteChannel();
-    if (!clear.waitForFinished(15000))
-        clear.kill();
-}
 
 QVariantMap Backend::identity(const QString &id) const {
     if (id.isEmpty())
@@ -743,7 +852,7 @@ QStringList Backend::askpassEnvironment(const QVariantMap &profile, bool termina
 // key, is asked in the terminal as ssh would.
 static const char askpassScript[] = R"sh(#!/bin/sh
 prompt="$1"
-dir="${XDG_RUNTIME_DIR:-/tmp}/tether"
+dir=@DIR@
 mark="$dir/askpass-$PPID"
 find "$dir" -maxdepth 1 -name 'askpass-*' -mmin +120 -delete 2>/dev/null
 case "$prompt" in
@@ -776,35 +885,39 @@ QString Backend::askpass() const {
     // tether.exe answers itself when started with TETHER_ASKPASS=1.
     return QCoreApplication::applicationFilePath();
 #endif
-    const QString path = QFileInfo(controlPath()).absolutePath() + "/askpass";
+    // The script is told the folder Tether itself uses. Left to work it out
+    // from XDG_RUNTIME_DIR, it disagrees with Qt wherever that isn't set
+    // (su and sudo sessions, some containers): its "already tried the saved
+    // password" mark then can't be written, and a wrong saved password is
+    // offered at every prompt until the server locks the account.
+    const QString directory = QFileInfo(controlPath()).absolutePath();
+    const QString path = directory + "/askpass";
+    const QByteArray script = QByteArray(askpassScript).replace("@DIR@", shellQuote(directory).toUtf8());
     QFile existing(path);
-    if (existing.open(QIODevice::ReadOnly) && existing.readAll() == QByteArray(askpassScript))
+    if (existing.open(QIODevice::ReadOnly) && existing.readAll() == script)
         return path;
     existing.close();
     QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly) || file.write(askpassScript) < 0 || !file.commit())
+    if (!file.open(QIODevice::WriteOnly) || file.write(script) < 0 || !file.commit())
         return {};
     QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
     return path;
 }
 
 QString Backend::saveIdentity(const QVariantMap &input, const QString &password, bool clearPassword) {
-    QVariantMap login{{"id", input.value("id").toString()},
-                      {"name", input.value("name").toString().trimmed()},
-                      {"user", input.value("user").toString().trimmed()},
-                      {"identityFile", input.value("identityFile").toString().trimmed()},
-                      {"hasPassword", false}};
-    if (login["name"].toString().isEmpty())
-        return tr("Give the login a name.");
-    if (!login["user"].toString().isEmpty() && !userPattern.match(login["user"].toString()).hasMatch())
-        return tr("“%1” isn't a valid user name.").arg(login["user"].toString());
-    if (login["identityFile"].toString().contains('\n'))
-        return tr("The key file path can't span lines.");
+    QVariantMap login = cleanLogin(input);
+    if (const QString problem = loginProblem(login); !problem.isEmpty())
+        return problem;
+    if (m_vaultBusy)
+        return tr("The last login is still being saved.");
     if (login["id"].toString().isEmpty())
         login["id"] = QUuid::createUuid().toString(QUuid::WithoutBraces);
     const QString id = login["id"].toString();
-    const QVariantMap before = identity(id);
-    login["hasPassword"] = before.value("hasPassword").toBool();
+    login["hasPassword"] = identity(id).value("hasPassword").toBool();
+    // The answer always comes after this call returns, so callers have one path.
+    auto finish = [this](const QVariantMap &login) {
+        QMetaObject::invokeMethod(this, [this, login] { emit identitySaved(storeIdentity(login)); }, Qt::QueuedConnection);
+    };
 
 #ifdef Q_OS_WIN
     if (!password.isEmpty()) {
@@ -820,28 +933,43 @@ QString Backend::saveIdentity(const QVariantMap &input, const QString &password,
     if (!password.isEmpty()) {
         if (secretTool.isEmpty())
             return tr("Saving passwords needs secret-tool (the libsecret package) and a keyring like GNOME Keyring or KeePassXC.");
-        QProcess store;
-        store.start(secretTool, {"store", "--label=Tether: " + login["name"].toString(), "service", "tether", "identity", id});
-        store.write(password.toUtf8());
-        store.closeWriteChannel();
-        if (!store.waitForFinished(30000) || store.exitCode() != 0)
-            return tr("The keyring didn't take the password: %1").arg(QString::fromUtf8(store.readAllStandardError()).trimmed());
-        login["hasPassword"] = true;
+        // A locked keyring shows its own unlock prompt and answers when the
+        // user is done with it; the window stays usable meanwhile.
+        m_vaultBusy = true;
+        runTool(secretTool, {"store", "--label=Tether: " + login["name"].toString(), "service", "tether", "identity", id},
+                password.toUtf8(), 30000, [this, login](bool ok, const QString &error) mutable {
+                    m_vaultBusy = false;
+                    if (!ok) {
+                        emit identitySaved(tr("The keyring didn't take the password: %1")
+                                               .arg(error.isEmpty() ? tr("it didn't answer in time") : error));
+                        return;
+                    }
+                    login["hasPassword"] = true;
+                    emit identitySaved(storeIdentity(login));
+                });
+        return {};
     } else if (clearPassword && login["hasPassword"].toBool()) {
         if (!secretTool.isEmpty())
-            clearSecret(secretTool, id);
+            runTool(secretTool, {"clear", "service", "tether", "identity", id}, {}, 15000, {});
         login["hasPassword"] = false;
     }
 #endif
+    finish(login);
+    return {};
+}
 
-    bool replaced = false;
-    for (QVariant &existing : m_identities)
-        if (existing.toMap().value("id") == id) {
-            existing = login;
-            replaced = true;
-        }
-    if (!replaced)
+// Puts a checked login in the vault's list and saves it.
+QString Backend::storeIdentity(const QVariantMap &input) {
+    const QVariantMap login = withStamp(input);
+    const QString id = login["id"].toString();
+    const int at = indexOfId(m_identities, id);
+    if (at >= 0)
+        m_identities[at] = login;
+    else
         m_identities << login;
+    // What was just saved here is newer than a synced copy still waiting.
+    if (release("login", id))
+        emit syncReviewChanged();
     emit identitiesChanged();
     return save();
 }
@@ -855,20 +983,22 @@ QString Backend::removeIdentity(const QString &id) {
         Credentials::remove(id);
 #else
     if (login.value("hasPassword").toBool() && !tool("secret-tool").isEmpty())
-        clearSecret(tool("secret-tool"), id);
+        runTool(tool("secret-tool"), {"clear", "service", "tether", "identity", id}, {}, 15000, {});
 #endif
     for (int i = 0; i < m_identities.size(); ++i)
         if (m_identities[i].toMap().value("id") == id)
             m_identities.removeAt(i--);
     if (!m_removed.contains(id))
         m_removed << id;
+    if (release("login", id, true))
+        emit syncReviewChanged();
     // Hosts that used it go back to their own fields.
     bool profilesTouched = false;
     for (QVariant &value : m_profiles) {
         QVariantMap p = value.toMap();
         if (p.value("identityId") == id) {
             p["identityId"] = QString();
-            value = p;
+            value = withStamp(p);
             profilesTouched = true;
         }
     }
@@ -901,8 +1031,95 @@ void Backend::watchSyncFile() {
         m_syncWatcher.addPath(file);
 }
 
-// Takes in what other computers wrote: the union of both sides, with the
-// shared file's copy winning where an item is on both.
+QStringList Backend::riskyOptions(const QVariantMap &profile) {
+    QStringList found;
+    for (const QString &line : optionLines(profile.value("options"))) {
+        const QString name = optionPattern.match(line).captured(1);
+        if (riskyOptionNames.contains(name.toLower()) && !found.contains(name, Qt::CaseInsensitive))
+            found << name;
+    }
+    return found;
+}
+
+// Keeps a synced copy aside instead of applying it. The same copy held
+// before, waiting or turned down, isn't asked about again.
+void Backend::hold(const QString &type, const QVariantMap &item, const QVariantMap &before) {
+    const QString id = item.value("id").toString();
+    const QVariantMap entry{{"type", type}, {"id", id}, {"item", item}, {"before", before}, {"state", "pending"}};
+    for (QVariant &value : m_held) {
+        const QVariantMap held = value.toMap();
+        if (held.value("type") != type || held.value("id") != id)
+            continue;
+        if (withoutStamp(held.value("item").toMap()) != withoutStamp(item)) {
+            value = entry;
+            m_heldChanged = true;
+        }
+        return;
+    }
+    m_held << entry;
+    m_heldChanged = true;
+}
+
+// Drops what waits for an item, since something newer settled it. A copy that
+// was turned down stays remembered unless the item itself is gone: the same
+// copy coming back, with whatever time is written on it, isn't a new question.
+bool Backend::release(const QString &type, const QString &id, bool forget) {
+    return m_held.removeIf([&](const QVariant &value) {
+        const QVariantMap held = value.toMap();
+        return held.value("type") == type && held.value("id") == id && (forget || held.value("state") == "pending");
+    }) > 0;
+}
+
+// One list of synced items against this computer's. The newer copy of an
+// item wins (a copy without a time, from an older Tether, counts as newer),
+// but a copy that would change something guarded is held for the user.
+bool Backend::mergeSynced(const QString &type, QVariantList &mine, const QVariantList &theirs) {
+    bool changed = false;
+    for (const QVariant &value : theirs) {
+        const QVariantMap item = value.toMap();
+        const QString id = item.value("id").toString();
+        const int at = indexOfId(mine, id);
+        if (at >= 0) {
+            const QVariantMap local = mine[at].toMap();
+            if (withoutStamp(local) == withoutStamp(item)) {
+                m_heldChanged |= release(type, id);
+                continue;
+            }
+            if (modifiedOf(item) != 0 && modifiedOf(item) < modifiedOf(local)) {
+                // Ours was saved later: it stays, and goes back to the file.
+                m_heldChanged |= release(type, id);
+                m_syncStale = true;
+                continue;
+            }
+            if (guardedDiffers(type, local, item)) {
+                hold(type, item, {});
+                continue;
+            }
+            mine[at] = item;
+            m_heldChanged |= release(type, id);
+            changed = true;
+            continue;
+        }
+        // New here. An id a sync removed earlier is compared with what it
+        // was then, so "removed, then back with another address" is a change.
+        const QVariantMap tombstone = m_tombstones.value(id).toMap();
+        QVariantMap was = tombstone.value("type") == type ? tombstone.value("item").toMap() : QVariantMap();
+        if (type == "host" && !was.isEmpty())
+            was = clean(was); // numbers as clean() writes them, to compare
+        if ((!was.isEmpty() && guardedDiffers(type, was, item)) || (type == "host" && !riskyOptions(item).isEmpty())) {
+            hold(type, item, was);
+            continue;
+        }
+        mine << item;
+        m_tombstones.remove(id);
+        m_heldChanged |= release(type, id);
+        changed = true;
+    }
+    return changed;
+}
+
+// Takes in what other computers wrote: the union of both sides, the newer
+// copy where an item is on both, and nothing risky without being asked.
 void Backend::readSyncFile() {
     const QString path = syncFile();
     if (path.isEmpty())
@@ -923,48 +1140,61 @@ void Backend::readSyncFile() {
         return;
     }
     const QJsonObject root = document.object();
-    auto merge = [](QVariantList &mine, const QVariantList &theirs, const std::function<bool(const QVariantMap &)> &ok) {
+    // Everything from the file goes through the same checks as the dialogs.
+    QVariantList profiles, snippets, identities;
+    for (const QVariant &value : root.value("profiles").toArray().toVariantList()) {
+        const QVariantMap item = clean(value.toMap());
+        if (!item.value("id").toString().isEmpty() && validate(item).isEmpty())
+            profiles << item;
+    }
+    for (const QVariant &value : root.value("snippets").toArray().toVariantList()) {
+        const QVariantMap item = cleanSnippet(value.toMap());
+        if (!item.value("id").toString().isEmpty() && !item.value("name").toString().isEmpty()
+            && !item.value("text").toString().isEmpty())
+            snippets << item;
+    }
+    for (const QVariant &value : root.value("identities").toArray().toVariantList()) {
+        QVariantMap item = cleanLogin(value.toMap());
+        if (item.value("id").toString().isEmpty() || !loginProblem(item).isEmpty())
+            continue;
+        // Whether a password is in the keyring is a fact about this
+        // computer; another computer's word for it isn't taken.
+        item["hasPassword"] = identity(item.value("id").toString()).value("hasPassword").toBool();
+        identities << item;
+    }
+    m_heldChanged = false;
+    m_syncStale = false;
+    const bool p = mergeSynced("host", m_profiles, profiles);
+    const bool s = mergeSynced("snippet", m_snippets, snippets);
+    const bool i = mergeSynced("login", m_identities, identities);
+    // Removals: what another computer deleted since our last write. The last
+    // copy is remembered here (not in the shared file), see mergeSynced.
+    const QStringList removed = root.value("removed").toVariant().toStringList();
+    auto drop = [&](const QString &type, QVariantList &list) {
         bool changed = false;
-        for (const QVariant &value : theirs) {
-            const QVariantMap item = value.toMap();
-            if (item.value("id").toString().isEmpty() || !ok(item))
+        for (int n = 0; n < list.size(); ++n) {
+            const QString id = list[n].toMap().value("id").toString();
+            if (!removed.contains(id))
                 continue;
-            bool found = false;
-            for (QVariant &existing : mine)
-                if (existing.toMap().value("id") == item.value("id")) {
-                    found = true;
-                    if (existing.toMap() != item) {
-                        existing = item;
-                        changed = true;
-                    }
-                }
-            if (!found) {
-                mine << item;
-                changed = true;
-            }
+            m_tombstones.insert(id, QVariantMap{{"type", type}, {"item", list[n]},
+                                                {"at", QDateTime::currentMSecsSinceEpoch()}});
+            list.removeAt(n--);
+            changed = true;
         }
         return changed;
     };
-    QVariantList profiles;
-    for (const QVariant &value : root.value("profiles").toArray().toVariantList())
-        profiles << clean(value.toMap());
-    const bool p = merge(m_profiles, profiles, [](const QVariantMap &item) { return validate(item).isEmpty(); });
-    const bool s = merge(m_snippets, root.value("snippets").toArray().toVariantList(),
-                         [](const QVariantMap &item) { return !item.value("name").toString().isEmpty(); });
-    const bool i = merge(m_identities, root.value("identities").toArray().toVariantList(),
-                         [](const QVariantMap &item) { return !item.value("name").toString().isEmpty(); });
-    // Removals: what another computer deleted since our last write.
-    const QStringList removed = root.value("removed").toVariant().toStringList();
-    auto drop = [&](QVariantList &list) {
-        bool changed = false;
-        for (int n = 0; n < list.size(); ++n)
-            if (removed.contains(list[n].toMap().value("id").toString())) {
-                list.removeAt(n--);
-                changed = true;
-            }
-        return changed;
-    };
-    const bool d = drop(m_profiles) | drop(m_snippets) | drop(m_identities);
+    const bool d = drop("host", m_profiles) | drop("snippet", m_snippets) | drop("login", m_identities);
+    for (const QString &id : removed)
+        m_heldChanged |= m_held.removeIf([&](const QVariant &value) { return value.toMap().value("id") == id; }) > 0;
+    // The oldest go once there are many.
+    while (m_tombstones.size() > 200) {
+        QString oldest;
+        for (auto it = m_tombstones.cbegin(); it != m_tombstones.cend(); ++it)
+            if (oldest.isEmpty() || it.value().toMap().value("at").toLongLong()
+                                        < m_tombstones.value(oldest).toMap().value("at").toLongLong())
+                oldest = it.key();
+        m_tombstones.remove(oldest);
+    }
     m_removed = removed;
     m_lastSync = data;
     if (p || d)
@@ -973,26 +1203,50 @@ void Backend::readSyncFile() {
         emit snippetsChanged();
     if (i || d)
         emit identitiesChanged();
+    if (m_heldChanged)
+        emit syncReviewChanged();
     m_syncStatus = tr("Synced with %1 at %2").arg(path, QDateTime::currentDateTime().toString("HH:mm"));
     emit syncStatusChanged();
-    if (p || s || i || d)
+    if (p || s || i || d || m_heldChanged)
         save();
+    else if (m_syncStale)
+        writeSyncFile();
 }
 
 void Backend::writeSyncFile() {
     const QString path = syncFile();
     if (path.isEmpty())
         return;
+    // What is held from sync goes back out as it came. It isn't this
+    // computer's to drop: writing our older copy over it would undo the other
+    // computer's edit there, and the two would overwrite each other in turn.
+    // A copy that was turned down is different: this computer's own copy is
+    // what it says, and the other computers are asked about that in turn.
+    auto shared = [this](const QString &type, QVariantList list) {
+        for (const QVariant &value : m_held) {
+            const QVariantMap held = value.toMap();
+            if (held.value("type") != type)
+                continue;
+            const int at = indexOfId(list, held.value("id").toString());
+            if (at < 0)
+                list << held.value("item");
+            else if (held.value("state") == "pending")
+                list[at] = held.value("item");
+        }
+        return list;
+    };
     const QJsonObject root{{"version", 1}, {"app", "tether"},
-                           {"profiles", QJsonArray::fromVariantList(m_profiles)},
-                           {"snippets", QJsonArray::fromVariantList(m_snippets)},
-                           {"identities", QJsonArray::fromVariantList(m_identities)},
+                           {"profiles", QJsonArray::fromVariantList(shared("host", m_profiles))},
+                           {"snippets", QJsonArray::fromVariantList(shared("snippet", m_snippets))},
+                           {"identities", QJsonArray::fromVariantList(shared("login", m_identities))},
                            {"removed", QJsonArray::fromStringList(m_removed)}};
     const QByteArray data = QJsonDocument(root).toJson();
     if (data == m_lastSync)
         return;
     QSaveFile file(path);
-    if (file.open(QIODevice::WriteOnly) && file.write(data) >= 0 && file.commit()) {
+    // Host names, user names, and key paths: nobody else's to read.
+    if (file.open(QIODevice::WriteOnly) && file.setPermissions(QFile::ReadOwner | QFile::WriteOwner)
+        && file.write(data) >= 0 && file.commit()) {
         m_lastSync = data;
         m_syncStatus = tr("Synced with %1 at %2").arg(path, QDateTime::currentDateTime().toString("HH:mm"));
     } else {
@@ -1000,6 +1254,128 @@ void Backend::writeSyncFile() {
     }
     emit syncStatusChanged();
     watchSyncFile();
+}
+
+// What waits for the user, in words: which fields a synced copy would change.
+QVariantList Backend::syncReview() const {
+    // Spelled out one by one, for bin/i18n-check to find them.
+    auto label = [](const QString &field) {
+        return field == "kind" ? tr("Type") : field == "host" ? tr("Address") : field == "port" ? tr("Port")
+             : field == "user" ? tr("User") : field == "options" ? tr("ssh options")
+             : field == "jumpHost" ? tr("Jump host") : field == "identityFile" ? tr("Key file")
+             : field == "identityId" ? tr("Login") : field == "forwards" ? tr("Port forwards")
+             : field == "startupSnippets" ? tr("Startup snippets") : field == "device" ? tr("Device")
+             : field == "text" ? tr("Text") : field == "run" ? tr("Presses Enter") : field;
+    };
+    auto nameOf = [this](const QVariantList &list, const QString &type, const QString &id) {
+        const int at = indexOfId(list, id);
+        if (at >= 0)
+            return list[at].toMap().value("name").toString();
+        for (const QVariant &value : m_held)
+            if (value.toMap().value("type") == type && value.toMap().value("id") == id)
+                return value.toMap().value("item").toMap().value("name").toString();
+        return id;
+    };
+    auto shown = [&](const QString &field, const QVariant &value) -> QString {
+        if (field == "forwards") {
+            QStringList parts;
+            for (const QVariant &f : value.toList())
+                parts << f.toMap().value("type").toString() + " " + f.toMap().value("spec").toString();
+            return parts.join(", ");
+        }
+        if (field == "startupSnippets") {
+            QStringList names;
+            for (const QVariant &id : value.toList())
+                names << nameOf(m_snippets, "snippet", id.toString());
+            return names.join(", ");
+        }
+        if (field == "identityId")
+            return value.toString().isEmpty() ? QString() : nameOf(m_identities, "login", value.toString());
+        if (field == "run")
+            return value.toBool() ? tr("Yes") : tr("No");
+        return value.toString();
+    };
+    QVariantList review;
+    for (const QVariant &value : m_held) {
+        const QVariantMap held = value.toMap();
+        if (held.value("state") != "pending")
+            continue;
+        const QString type = held.value("type").toString(), id = held.value("id").toString();
+        const QVariantMap item = held.value("item").toMap();
+        const QVariantList &mine = type == "host" ? m_profiles : type == "snippet" ? m_snippets : m_identities;
+        const int at = indexOfId(mine, id);
+        const QVariantMap before = at >= 0 ? mine[at].toMap() : held.value("before").toMap();
+        QVariantList changes;
+        for (const QString &field : guardedFields.value(type)) {
+            const QString was = before.isEmpty() ? QString() : shown(field, before.value(field));
+            const QString now = shown(field, item.value(field));
+            // A new item lists what it holds; a changed one, what differs.
+            if (before.isEmpty() ? (!now.isEmpty() && field != "kind" && field != "run") : before.value(field) != item.value(field))
+                changes << QVariantMap{{"label", label(field)}, {"before", was}, {"after", now}};
+        }
+        review << QVariantMap{{"id", id}, {"type", type}, {"name", item.value("name")}, {"isNew", at < 0},
+                              {"risky", type == "host" ? riskyOptions(item) : QStringList()}, {"changes", changes}};
+    }
+    return review;
+}
+
+QString Backend::approveSync(const QString &id) {
+    bool hosts = false, snippets = false, logins = false;
+    for (int n = 0; n < m_held.size(); ++n) {
+        const QVariantMap held = m_held[n].toMap();
+        if (held.value("state") != "pending" || (!id.isEmpty() && held.value("id") != id))
+            continue;
+        const QString type = held.value("type").toString();
+        const QVariantMap item = held.value("item").toMap();
+        QVariantList &mine = type == "host" ? m_profiles : type == "snippet" ? m_snippets : m_identities;
+        const int at = indexOfId(mine, held.value("id").toString());
+        if (at >= 0)
+            mine[at] = item;
+        else
+            mine << item;
+        m_tombstones.remove(held.value("id").toString());
+        (type == "host" ? hosts : type == "snippet" ? snippets : logins) = true;
+        m_held.removeAt(n--);
+    }
+    if (hosts)
+        emit profilesChanged();
+    if (snippets)
+        emit snippetsChanged();
+    if (logins)
+        emit identitiesChanged();
+    emit syncReviewChanged();
+    return save();
+}
+
+QString Backend::rejectSync(const QString &id) {
+    bool hosts = false, snippets = false, logins = false;
+    for (int n = 0; n < m_held.size(); ++n) {
+        QVariantMap held = m_held[n].toMap();
+        if (held.value("state") != "pending" || (!id.isEmpty() && held.value("id") != id))
+            continue;
+        const QString type = held.value("type").toString();
+        QVariantList &mine = type == "host" ? m_profiles : type == "snippet" ? m_snippets : m_identities;
+        const int at = indexOfId(mine, held.value("id").toString());
+        if (at >= 0) {
+            // Keeping this computer's copy is a decision made now, so it is
+            // the newer one and the other computers are offered it.
+            mine[at] = withStamp(mine[at].toMap());
+            (type == "host" ? hosts : type == "snippet" ? snippets : logins) = true;
+        }
+        // Remembered as turned down, so the same copy isn't offered again,
+        // whatever time it comes back with. Where there is nothing here to
+        // keep, it stays in the shared file for the computers that want it.
+        held["state"] = "rejected";
+        m_held[n] = held;
+    }
+    if (hosts)
+        emit profilesChanged();
+    if (snippets)
+        emit snippetsChanged();
+    if (logins)
+        emit identitiesChanged();
+    emit syncReviewChanged();
+    return save();
 }
 
 // ── Snippets ───────────────────────────────────────────────────────────────
@@ -1043,11 +1419,14 @@ QString Backend::saveProfile(const QVariantMap &profile) {
     const QString error = validate(profile);
     if (!error.isEmpty())
         return error;
-    QVariantMap p = clean(profile);
+    QVariantMap p = withStamp(clean(profile));
     if (p["id"].toString().isEmpty())
         p["id"] = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
     const QVariantList before = m_profiles;
+    // What is saved here now is newer than a synced copy still waiting.
+    const QVariantList heldBefore = m_held;
+    const bool released = release("host", p["id"].toString());
     bool replaced = false;
     for (QVariant &existing : m_profiles)
         if (existing.toMap().value("id") == p["id"]) {
@@ -1059,9 +1438,12 @@ QString Backend::saveProfile(const QVariantMap &profile) {
 
     if (const QString saveError = save(); !saveError.isEmpty()) {
         m_profiles = before;
+        m_held = heldBefore;
         return saveError;
     }
     emit profilesChanged();
+    if (released)
+        emit syncReviewChanged();
     return {};
 }
 
@@ -1070,19 +1452,21 @@ QString Backend::removeProfile(const QString &id) {
     m_profiles.removeIf([&](const QVariant &p) { return p.toMap().value("id").toString() == id; });
     if (!m_removed.contains(id))
         m_removed << id;
+    const QVariantList heldBefore = m_held;
+    const bool released = release("host", id, true);
     if (const QString error = save(); !error.isEmpty()) {
         m_profiles = before;
+        m_held = heldBefore;
         return error;
     }
     emit profilesChanged();
+    if (released)
+        emit syncReviewChanged();
     return {};
 }
 
 QString Backend::saveSnippet(const QVariantMap &snippet) {
-    QVariantMap s{{"id", snippet.value("id").toString()},
-                  {"name", snippet.value("name").toString().trimmed()},
-                  {"text", snippet.value("text").toString()},
-                  {"run", snippet.value("run").toBool()}};
+    QVariantMap s = withStamp(cleanSnippet(snippet));
     if (s["name"].toString().isEmpty())
         return tr("Give the snippet a name.");
     if (s["text"].toString().isEmpty())
@@ -1099,11 +1483,16 @@ QString Backend::saveSnippet(const QVariantMap &snippet) {
         }
     if (!replaced)
         m_snippets << s;
+    const QVariantList heldBefore = m_held;
+    const bool released = release("snippet", s["id"].toString());
     if (const QString error = save(); !error.isEmpty()) {
         m_snippets = before;
+        m_held = heldBefore;
         return error;
     }
     emit snippetsChanged();
+    if (released)
+        emit syncReviewChanged();
     return {};
 }
 
@@ -1112,11 +1501,16 @@ QString Backend::removeSnippet(const QString &id) {
     m_snippets.removeIf([&](const QVariant &s) { return s.toMap().value("id").toString() == id; });
     if (!m_removed.contains(id))
         m_removed << id;
+    const QVariantList heldBefore = m_held;
+    const bool released = release("snippet", id, true);
     if (const QString error = save(); !error.isEmpty()) {
         m_snippets = before;
+        m_held = heldBefore;
         return error;
     }
     emit snippetsChanged();
+    if (released)
+        emit syncReviewChanged();
     return {};
 }
 
@@ -1140,10 +1534,30 @@ void Backend::load() {
         if (validate(p).isEmpty() && !p.value("id").toString().isEmpty())
             m_profiles << clean(p);
     }
-    m_snippets = root.value("snippets").toArray().toVariantList();
+    for (const QVariant &value : root.value("snippets").toArray().toVariantList())
+        m_snippets << cleanSnippet(value.toMap());
     m_fontSize = std::clamp(root.value("fontSize").toInt(13), 7, 40);
-    m_identities = root.value("identities").toArray().toVariantList();
+    for (const QVariant &value : root.value("identities").toArray().toVariantList())
+        m_identities << cleanLogin(value.toMap());
     m_removed = root.value("removed").toVariant().toStringList();
+    // What sync brought that waits for the user or was turned down, and the
+    // last copies of what it removed: this computer's own notes, never synced.
+    // Held items are checked again, since they came from outside.
+    for (const QVariant &value : root.value("syncHeld").toArray().toVariantList()) {
+        QVariantMap held = value.toMap();
+        const QString type = held.value("type").toString();
+        const QVariantMap raw = held.value("item").toMap();
+        const QVariantMap item = type == "host" ? clean(raw) : type == "snippet" ? cleanSnippet(raw) : cleanLogin(raw);
+        const bool valid = type == "host" ? validate(item).isEmpty()
+                         : type == "snippet" ? !item.value("name").toString().isEmpty() && !item.value("text").toString().isEmpty()
+                         : type == "login" && loginProblem(item).isEmpty();
+        if (!valid || item.value("id").toString().isEmpty())
+            continue;
+        held["item"] = item;
+        held["id"] = item.value("id");
+        m_held << held;
+    }
+    m_tombstones = root.value("syncRemoved").toObject().toVariantMap();
     const QVariantMap stored = root.value("settings").toObject().toVariantMap();
     for (auto it = stored.cbegin(); it != stored.cend(); ++it)
         if (defaultSettings().contains(it.key()))
@@ -1159,8 +1573,10 @@ QString Backend::save() {
                            {"fontSize", m_fontSize},
                            {"settings", QJsonObject::fromVariantMap(m_settings)},
                            {"identities", QJsonArray::fromVariantList(m_identities)},
-                           {"removed", QJsonArray::fromStringList(m_removed.mid(qMax(0, int(m_removed.size()) - 500)))}};
-    if (!file.open(QIODevice::WriteOnly)) 
+                           {"removed", QJsonArray::fromStringList(m_removed.mid(qMax(0, int(m_removed.size()) - 500)))},
+                           {"syncHeld", QJsonArray::fromVariantList(m_held)},
+                           {"syncRemoved", QJsonObject::fromVariantMap(m_tombstones)}};
+    if (!file.open(QIODevice::WriteOnly))
         return tr("Couldn't save to %1: %2").arg(m_configFile, file.errorString());
     file.setPermissions(QFile::ReadOwner | QFile::WriteOwner);
     file.write(QJsonDocument(root).toJson());

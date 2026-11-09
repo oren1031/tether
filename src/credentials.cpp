@@ -42,9 +42,24 @@ QString lookup(const QString &id) {
 
 void remove(const QString &id) { CredDeleteW(target(id).c_str(), CRED_TYPE_GENERIC, 0); }
 
+// ssh's "trust this host?" question, shown as a window with the fingerprint
+// ssh printed; No is the button Enter presses. ssh takes "yes" or "no".
+static int askTrust(const QString &prompt) {
+    const std::wstring text = prompt.trimmed().toStdWString();
+    const int choice = MessageBoxW(nullptr, text.c_str(), L"Tether",
+                                   MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND | MB_TOPMOST);
+    std::fputs(choice == IDYES ? "yes\n" : "no\n", stdout);
+    std::fflush(stdout);
+    return 0;
+}
+
 int askpass(const QString &prompt) {
     const QString id = qEnvironmentVariable("TETHER_IDENTITY");
     const QString lower = prompt.toLower();
+    // A host key ssh hasn't seen: the user decides, with the fingerprint in
+    // front of them. (A changed key isn't asked about; ssh refuses it.)
+    if (lower.contains("(yes/no"))
+        return askTrust(prompt);
     if (id.isEmpty() || !(lower.contains("password") || lower.contains("passphrase") || lower.contains("pin")))
         return 1;
     // Once per login: a wrong saved password mustn't be tried until the
