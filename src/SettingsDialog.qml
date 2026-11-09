@@ -625,6 +625,21 @@ TSheet {
                 }
 
                 Group {
+                    title: qsTr("Language")
+                    Row_ {
+                        label: qsTr("Language")
+                        last: true
+                        TCombo {
+                            width: 230
+                            readonly property var choices: [{ code: "", name: qsTr("System") }].concat(translator.languages)
+                            model: choices.map(c => c.name)
+                            currentIndex: Math.max(0, choices.findIndex(c => c.code === translator.preference))
+                            onActivated: index => dialog.set("language", choices[index].code)
+                        }
+                    }
+                }
+
+                Group {
                     title: qsTr("Text")
                     Row_ {
                         label: qsTr("Font")

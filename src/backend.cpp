@@ -180,6 +180,7 @@ QVariantMap Backend::defaultSettings() {
     return {{"accent", "blue"},           // a name from Style.accents, or "omarchy"
             {"interfaceFont", ""},        // empty picks Inter, then Noto Sans
             {"interfaceFontSize", 13},
+            {"language", ""},             // empty follows the system; else a catalog code ("he")
             {"terminalScheme", "omarchy"}, // "omarchy" or a scheme the terminal ships
             {"terminalFont", ""},         // empty is the system monospace font
             {"lineSpacing", 0},

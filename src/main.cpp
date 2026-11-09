@@ -70,6 +70,9 @@ int main(int argc, char *argv[]) {
 
     Theme theme;
     Backend backend;
+    translator.setPreference(backend.settings().value("language").toString());
+    QObject::connect(&backend, &Backend::settingsChanged, &translator,
+                     [&] { translator.setPreference(backend.settings().value("language").toString()); });
     SerialPorts serialPorts;
     Assistant assistant;
     Updater updater(QString(TETHER_REPO).trimmed(), APP_VERSION);
