@@ -241,6 +241,8 @@ Rectangle {
                 readonly property bool strong: current && (list.activeFocus || search.activeFocus)
 
                 width: ListView.view.width - 16
+                // A finger needs 44 px whatever the font makes of the text.
+                implicitHeight: Math.max(implicitContentHeight + topPadding + bottomPadding, Style.touch ? 44 : 0)
                 topPadding: 7
                 bottomPadding: 7
                 leftPadding: 8

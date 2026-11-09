@@ -4,9 +4,38 @@ What changed in each version. Newest first. The release workflow uses the
 section named for the version being released (for example `## 0.5.5`) as that
 release's notes.
 
-## Unreleased
+## 0.5.5
 
-Security and quality fixes from the audit of 0.5.4.
+Security, accessibility and quality fixes from the audit of 0.5.4, and Hebrew.
+
+### Sync, host keys and secrets
+- Synced changes to where a host connects, its ssh options, a snippet's text or
+  a login are held in a review sheet until you accept them. Options that run a
+  program or switch off server checks never apply on their own. The newer edit
+  wins; the sync file is private to you (mode 600).
+- A changed host key defaults to "Don't connect", shows the saved and the new
+  fingerprint, and needs the host's name typed to replace it. On Windows the
+  yes/no question is a dialog with No as the default.
+- Pasting strips control characters and asks before several lines go into a
+  program that would run each as it arrives (a setting turns the question off).
+- The Claude API key is kept in the keyring (secret-tool / Credential Manager),
+  and an old key file is moved there. The Ask dialog says what is sent.
+- Names with a line break are refused in the file browser. Saving a login,
+  checking a connection and forgetting a host key no longer freeze the window.
+  An idle ssh session sleeps instead of polling every 20 ms.
+
+### Look and feel
+- Text on accent colours is chosen by contrast (it was always black).
+- Fields, sheets and controls have names for screen readers, a focus ring and
+  keyboard access (settings sections, accent swatches, steppers, segmented
+  controls). Touch targets are 44 px on phones; a tap connects and a long press
+  opens the menu. Sheets no longer close when you click outside them, and
+  destructive actions ask first.
+- Layouts mirror in right-to-left languages.
+
+### Language
+- Hebrew, and a Language setting (System or any shipped language).
+
 
 ### Updates and releases
 - Updates are signed. Each release carries `latest.json` (the size and
