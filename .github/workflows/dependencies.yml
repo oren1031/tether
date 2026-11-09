@@ -1,0 +1,41 @@
+# Once a month: compares the pinned libssh, OpenSSL build, libvterm and Qt
+# with the newest upstream versions (bin/check-dependencies) and keeps one
+# issue, "Dependency updates", up to date with the result. Can also be run by hand.
+name: Dependencies
+
+on:
+  schedule:
+    - cron: '17 6 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Compare with upstream
+        run: bin/check-dependencies | tee report.md
+
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Dependency updates"
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" \
+                     --json number,title --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          if grep -q 'newer exists\|Couldn.t check' report.md; then
+            if [ -n "$number" ]; then
+              gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file report.md
+            else
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file report.md
+            fi
+          elif [ -n "$number" ]; then
+            gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Everything pinned is the newest version now."
+          fi

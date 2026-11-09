@@ -231,8 +231,13 @@ size_t vterm_input_write(VTerm *vt, const char *bytes, size_t len)
         c = ';';
       }
       if(c == ';') {
-        vt->parser.v.csi.argi++;
-        vt->parser.v.csi.args[vt->parser.v.csi.argi] = CSI_ARG_MISSING;
+        /* Tether: upstream 0.3.3 steps past args[CSI_ARGS_MAX-1] here, so a
+         * server sending ESC[1;1;1;... with more than 16 arguments writes
+         * outside the array. Extra separators are ignored instead. */
+        if(vt->parser.v.csi.argi < CSI_ARGS_MAX-1) {
+          vt->parser.v.csi.argi++;
+          vt->parser.v.csi.args[vt->parser.v.csi.argi] = CSI_ARG_MISSING;
+        }
         break;
       }
 

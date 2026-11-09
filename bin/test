@@ -5,6 +5,8 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 mkdir -p "$ROOT/build/tests"
 cd "$ROOT/build/tests"
 
-"${QMAKE:-qmake6}" "$ROOT/tests/tether_tests.pro"
+# QMAKE_ARGS="CONFIG+=tether_sanitize" runs the tests under ASan and UBSan.
+# shellcheck disable=SC2086
+"${QMAKE:-qmake6}" "$ROOT/tests/tether_tests.pro" ${QMAKE_ARGS:-}
 make -j"$(nproc)"
 QT_QPA_PLATFORM=offscreen ./tether_tests

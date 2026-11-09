@@ -2,7 +2,10 @@
 # Builds a signed Tether APK:  build-apk.sh <abi> <output.apk>
 # Needs QT_ROOT_DIR (Qt for Android), ANDROID_SDK_ROOT, and ANDROID_NDK_ROOT.
 # Signs with KEYSTORE (base64 PKCS#12, alias "tether") and KEYSTORE_PASSWORD
-# when set, so each version installs over the last; else with a throwaway key.
+# when set, so each version installs over the last; else with a throwaway key,
+# unless TETHER_REQUIRE_KEY is set (tagged releases), which makes that an error.
+# TETHER_TEST_HOOKS=1 builds the CI test version, the only one with the
+# self-test and the test switches (--self-test, --ssh-test, --try-install).
 set -eu
 abi="$1"; out="$2"
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -18,7 +21,8 @@ cd "$build"
 libssh="${LIBSSH_ROOT:-$HOME/.cache/tether-libssh}/$abi"
 "$root/packaging/android/build-libssh.sh" "$abi" "$libssh"
 "$QT_ROOT_DIR/bin/qmake" "$root/tether.pro" ANDROID_ABIS="$abi" ANDROID_PACKAGE_SOURCE_DIR="$build/package" \
-    ANDROID_VERSION_NAME="$version" ANDROID_VERSION_CODE="$code" LIBSSH_DIR="$libssh"
+    ANDROID_VERSION_NAME="$version" ANDROID_VERSION_CODE="$code" LIBSSH_DIR="$libssh" \
+    ${TETHER_TEST_HOOKS:+CONFIG+=tether_test}
 make -j"$(nproc)"
 make INSTALL_ROOT="$build/android-build" install
 
@@ -26,6 +30,10 @@ if [ -n "${KEYSTORE:-}" ]; then
     echo "$KEYSTORE" | base64 -d > release.p12
     password="$KEYSTORE_PASSWORD"
 else
+    if [ -n "${TETHER_REQUIRE_KEY:-}" ]; then
+        echo "A release needs the signing key: KEYSTORE and KEYSTORE_PASSWORD aren't set." >&2
+        exit 1
+    fi
     echo "No release key given; signing with a throwaway key."
     password=throwaway
     rm -f release.p12

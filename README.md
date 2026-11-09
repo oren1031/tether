@@ -122,19 +122,64 @@ git clone https://github.com/oren1031/tether.git
 cd tether && bin/install
 ```
 
+## What Tether stores and sends
+
+**On your computer**
+
+- `~/.config/tether/tether.json` (mode 600): saved hosts, snippets, settings,
+  and vault entries without their passwords. On Android it is in the app's
+  private storage, which backups leave out.
+- Passwords you save in the vault: only in the system keyring (libsecret on
+  Linux, Credential Manager on Windows), never in a file of Tether's.
+- The Anthropic API key, if you enter one for "Ask for a command": in the
+  system keyring when there is one, otherwise `~/.config/tether/anthropic-key`
+  (mode 600).
+- Session logs, for hosts or ports where you switched "Log" on:
+  `~/.local/share/tether/logs` (folder 700, files 600). They hold everything
+  the session printed, so a secret that appears on screen is in the log.
+- Host keys the built-in ssh (Android) has accepted: `known_hosts` in the
+  app's data folder. Desktop ssh uses your own `~/.ssh/known_hosts`.
+- The update download, in the cache folder's `updates`, until the next one.
+- A sync folder, if you choose one in Settings: `tether-hosts.json` with hosts,
+  snippets and vault logins (not passwords). Whoever can read that folder can
+  read it, and whoever can write there can change your hosts, so keep it
+  somewhere only you can reach.
+
+**Over the network**
+
+- **Update checks** (every few hours, and when you press Check): your update
+  server if one is set (default `https://tether.orenamir.com`, see below),
+  then `api.github.com` and `github.com`. What they see is your IP address
+  and "Tether/&lt;version&gt;" as the user agent; nothing else about you or
+  your hosts is sent. Turn automatic checks off in Settings → General.
+- **Ask for a command**, only when you use it: the text you type, and the
+  session's kind with the host and user name of an ssh session, go to
+  Anthropic (`api.anthropic.com`) with your API key, or to the `claude`
+  program on your computer if you use Claude Code instead (that is then
+  Claude Code's own connection). The terminal's contents are not sent.
+  Nothing is sent unless you press Ask, and nothing it suggests runs without
+  a click.
+- **ssh, sftp, mosh** connect only to the hosts you saved or typed.
+
+Tether has no analytics and no account.
+
 ## Your own update server
 
 Tether looks for updates on an update server of your own before GitHub, and
 falls back to GitHub when it can't be reached (set it in Settings → General →
-Updates). Every download is checked against the release's SHA-256 checksum,
-wherever it came from.
+Updates; it must be an `https://` address). The server only holds copies:
+every release carries a signed list of its files (`latest.json` and
+`latest.json.sig`), Tether checks that signature with the key built into it,
+and installs a file only when it matches the list, so a server can't change
+what gets installed. The default name `tether.orenamir.com` is the owner's
+server; a fork or a build with another default sets `TETHER_MIRROR`.
 
 On the server, with the domain's DNS pointing at it:
 
 ```sh
 git clone https://github.com/oren1031/tether.git
 sudo mkdir -p /srv/tether && sudo chown $USER /srv/tether
-tether/bin/mirror-release /srv/tether          # copies the newest release
+tether/bin/mirror-release /srv/tether          # copies and checks the newest release
 crontab -e    # */15 * * * * ~/tether/bin/mirror-release /srv/tether
 ```
 

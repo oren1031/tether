@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""Signs a release's files, so installed copies of Tether can tell a real
+update from anything else.
+
+    bin/sign-release <folder> <version> [--page URL] [--notes FILE]
+    bin/sign-release --try
+
+In <folder> (the release's files, as the build jobs made them) it writes:
+
+    latest.json        the version and each file's size and SHA-256
+    latest.json.sig    its signature; Tether checks this before an update
+    SHA256SUMS         the same checksums, for sha256sum -c
+    SHA256SUMS.sig     its signature; install.sh checks this
+
+The key is an OpenSSH ed25519 private key, taken from the file named by
+--key, or from the UPDATE_SIGNING_KEY environment variable (the key's text;
+that is the repository secret the release workflow uses). It is on no
+server: only whoever publishes a release has it. Its public half is built
+into Tether (src/updater.cpp), install.sh and bin/mirror-release; this
+script refuses to sign when those three disagree, and checks what it signed
+against that public key before it reports success, so a release is never
+published with a signature Tether would refuse.
+
+--try signs one line and checks it the same way: a quick test, before the
+builds start, that the key given is the right one.
+"""
+import argparse
+import base64
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+NAMESPACE = "tether-update"
+# The same rule Tether applies to a file name in the list.
+PLAIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+OWN = {"latest.json", "latest.json.sig", "SHA256SUMS", "SHA256SUMS.sig"}
+KEY_IN = {
+    "src/updater.cpp": r'#define TETHER_UPDATE_KEY "([A-Za-z0-9+/=]+)"',
+    "install.sh": r'TETHER_UPDATE_KEY:-([A-Za-z0-9+/=]+)\}',
+    "bin/mirror-release": r'UPDATE_KEY = "([A-Za-z0-9+/=]+)"',
+}
+
+
+def fail(message):
+    sys.exit("sign-release: " + message)
+
+
+def public_key():
+    """The key built into Tether, which the other two copies must match."""
+    found = {}
+    for path, pattern in KEY_IN.items():
+        with open(os.path.join(ROOT, path), encoding="utf-8") as source:
+            match = re.search(pattern, source.read())
+        if not match:
+            fail(f"couldn't find the update key in {path}")
+        found[path] = match.group(1)
+    if len(set(found.values())) != 1:
+        fail("the update key differs between " + ", ".join(f"{p} ({k[-8:]})" for p, k in found.items()))
+    return found["src/updater.cpp"]
+
+
+def private_key_file(folder, given):
+    """The private key as a file ssh-keygen accepts, in a folder only we can read."""
+    if given:
+        with open(given, encoding="utf-8") as source:
+            text = source.read()
+    else:
+        text = os.environ.get("UPDATE_SIGNING_KEY", "")
+    if not text.strip():
+        fail("no signing key: give --key FILE, or the key's text in UPDATE_SIGNING_KEY")
+    if "PRIVATE KEY" not in text:
+        # Some people store a key as base64 to keep it on one line.
+        try:
+            text = base64.b64decode(text, validate=False).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            pass
+    if "PRIVATE KEY" not in text:
+        fail("the signing key isn't an OpenSSH private key")
+    # ssh-keygen refuses Windows line ends and a missing last line end.
+    text = text.replace("\r", "").strip() + "\n"
+    path = os.path.join(folder, "key")
+    with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as out:
+        out.write(text)
+    return path
+
+
+def sign(path, key):
+    signature = path + ".sig"
+    if os.path.exists(signature):
+        os.remove(signature)
+    done = subprocess.run(["ssh-keygen", "-Y", "sign", "-f", key, "-n", NAMESPACE, path],
+                          capture_output=True, text=True)
+    if done.returncode != 0 or not os.path.exists(signature):
+        fail(f"ssh-keygen couldn't sign {os.path.basename(path)}: {done.stderr.strip()}")
+    os.chmod(signature, 0o644)
+
+
+def verify(path, public, scratch):
+    """Checks a signature exactly as Tether does."""
+    signers = os.path.join(scratch, "allowed_signers")
+    with open(signers, "w", encoding="utf-8") as out:
+        out.write(f'{NAMESPACE} namespaces="{NAMESPACE}" ssh-ed25519 {public}\n')
+    with open(path, "rb") as signed:
+        done = subprocess.run(["ssh-keygen", "-Y", "verify", "-f", signers, "-I", NAMESPACE,
+                               "-n", NAMESPACE, "-s", path + ".sig"],
+                              stdin=signed, capture_output=True, text=True)
+    if done.returncode != 0:
+        fail(f"the signature on {os.path.basename(path)} isn't from the key built into Tether "
+             f"(…{public[-8:]}): {(done.stderr or done.stdout).strip()}")
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("folder", nargs="?", help="the folder with the release's files")
+    parser.add_argument("version", nargs="?", help="the release's version, like 0.5.5")
+    parser.add_argument("--key", help="the private key file (default: the UPDATE_SIGNING_KEY variable)")
+    parser.add_argument("--page", default="", help="the release's web page, shown as a link")
+    parser.add_argument("--notes", help="a file with the release notes Tether shows")
+    parser.add_argument("--public-key", help="check against this key instead of the one in the source (for testing)")
+    parser.add_argument("--try", dest="trial", action="store_true", help="only test that the key works")
+    args = parser.parse_args()
+    public = args.public_key or public_key()
+
+    with tempfile.TemporaryDirectory() as scratch:
+        os.chmod(scratch, 0o700)
+        key = private_key_file(scratch, args.key)
+        if args.trial:
+            line = os.path.join(scratch, "line")
+            with open(line, "w", encoding="utf-8") as out:
+                out.write("tether\n")
+            sign(line, key)
+            verify(line, public, scratch)
+            print(f"The signing key matches the key built into Tether (…{public[-8:]}).")
+            return
+
+        if not args.folder or not args.version:
+            parser.error("give the folder and the version")
+        version = args.version.lstrip("vV")
+        if not re.fullmatch(r"[0-9]+(\.[0-9]+){1,3}", version):
+            fail(f"{args.version} isn't a version")
+        folder = os.path.abspath(args.folder)
+        names = sorted(n for n in os.listdir(folder)
+                       if n not in OWN and os.path.isfile(os.path.join(folder, n)))
+        if not names:
+            fail(f"no files in {folder}")
+        assets = []
+        for name in names:
+            if not PLAIN.match(name):
+                fail(f"{name!r} isn't a file name Tether accepts")
+            if version not in name:
+                fail(f"{name} isn't a file of version {version}")
+            path = os.path.join(folder, name)
+            size = os.path.getsize(path)
+            if size <= 0:
+                fail(f"{name} is empty")
+            # "url" is where Tether 0.5.4 and older look on an update server;
+            # newer ones work the place out themselves and ignore it.
+            assets.append({"name": name, "size": size, "sha256": sha256(path), "url": f"{version}/{name}"})
+
+        manifest = {"version": version, "assets": assets}
+        if args.page:
+            if not args.page.startswith("https://"):
+                fail("the page must be an https:// address")
+            manifest["page"] = args.page
+        if args.notes:
+            with open(args.notes, encoding="utf-8") as source:
+                notes = source.read().strip()
+            if notes:
+                manifest["notes"] = notes
+        listed = os.path.join(folder, "latest.json")
+        with open(listed, "w", encoding="utf-8") as out:
+            json.dump(manifest, out, indent=2, ensure_ascii=False)
+            out.write("\n")
+        sums = os.path.join(folder, "SHA256SUMS")
+        with open(sums, "w", encoding="utf-8") as out:
+            for asset in assets:
+                out.write(f"{asset['sha256']}  {asset['name']}\n")
+        for path in (listed, sums):
+            os.chmod(path, 0o644)
+            sign(path, key)
+            verify(path, public, scratch)
+        print(f"Signed Tether {version}: {len(assets)} files")
+        for asset in assets:
+            print(f"  {asset['sha256']}  {asset['size']:>10}  {asset['name']}")
+
+
+if __name__ == "__main__":
+    main()

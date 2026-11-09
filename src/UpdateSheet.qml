@@ -38,7 +38,8 @@ TSheet {
                     color: Style.label
                     linkColor: Style.accent
                     text: updater.notes || qsTr("No release notes.")
-                    onLinkActivated: link => Qt.openUrlExternally(link)
+                    // The notes come from the network: only web links open.
+                    onLinkActivated: link => { if (String(link).startsWith("https://")) Qt.openUrlExternally(link) }
                 }
             }
         }
@@ -82,7 +83,7 @@ TSheet {
             kind: "plain"
             leftPadding: 0
             text: qsTr("Release page")
-            visible: updater.releaseUrl !== ""
+            visible: updater.releaseUrl.startsWith("https://")
             onClicked: Qt.openUrlExternally(updater.releaseUrl)
         }
         Item { Layout.fillWidth: true }
@@ -97,7 +98,8 @@ TSheet {
                 : qsTr("Download")
             onClicked: {
                 if (updater.installKind === "page") {
-                    Qt.openUrlExternally(updater.releaseUrl)
+                    if (updater.releaseUrl.startsWith("https://"))
+                        Qt.openUrlExternally(updater.releaseUrl)
                     sheet.close()
                 } else if (updater.state === "ready") {
                     sheet.installRequested(updater.installCommand())

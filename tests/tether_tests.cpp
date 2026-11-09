@@ -12,6 +12,8 @@
 #include <QGuiApplication>
 #include <QInputMethodEvent>
 #include <QSignalSpy>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QtTest>
 
@@ -29,8 +31,127 @@
 #include "theme.h"
 #include "translator.h"
 
+// A web server on this computer for the update tests: each path answers
+// with the bytes it was given, anything else with 404.
+struct WebServer {
+    QTcpServer server;
+    QHash<QString, QByteArray> files;
+    QStringList asked;
+
+    WebServer()
+    {
+        server.listen(QHostAddress::LocalHost);
+        QObject::connect(&server, &QTcpServer::newConnection, &server, [this] {
+            while (QTcpSocket *socket = server.nextPendingConnection()) {
+                QObject::connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+                QObject::connect(socket, &QTcpSocket::readyRead, socket, [this, socket] {
+                    if (!socket->peek(64 * 1024).contains("\r\n\r\n"))
+                        return;
+                    const QString path = QString::fromLatin1(socket->readAll()).section(' ', 1, 1);
+                    asked << path;
+                    const bool found = files.contains(path);
+                    const QByteArray body = files.value(path);
+                    socket->write((found ? "HTTP/1.1 200 OK" : "HTTP/1.1 404 Not Found")
+                                  + QByteArray("\r\nConnection: close\r\nContent-Length: ")
+                                  + QByteArray::number(body.size()) + "\r\n\r\n" + body);
+                    socket->disconnectFromHost();
+                });
+            }
+        });
+    }
+    QString url() const { return QString("http://127.0.0.1:%1").arg(server.serverPort()); }
+};
+
+// A release as the publishing workflow makes it, signed with a key made for
+// the test: latest.json, its signature, and the package it lists.
+struct SignedRelease {
+    QTemporaryDir dir;
+    QString publicKey;       // the base64 part, as built into Tether
+    QByteArray package = QByteArray("the package").repeated(5000);
+    QString name;
+
+    bool makeKey()
+    {
+        const QString keygen = QStandardPaths::findExecutable("ssh-keygen");
+        if (keygen.isEmpty() || QProcess::execute(keygen, {"-q", "-t", "ed25519", "-N", "", "-f", dir.filePath("key")}) != 0)
+            return false;
+        QFile pub(dir.filePath("key.pub"));
+        if (!pub.open(QIODevice::ReadOnly))
+            return false;
+        publicKey = QString::fromLatin1(pub.readAll()).section(' ', 1, 1);
+        return !publicKey.isEmpty();
+    }
+    QByteArray manifest(const QString &version, const QJsonObject &changes = {}) const
+    {
+        QJsonObject asset{{"name", name.isEmpty() ? QString("tether-%1-1-x86_64.pkg.tar.zst").arg(version) : name},
+                          {"size", package.size()},
+                          {"sha256", QString::fromLatin1(QCryptographicHash::hash(package, QCryptographicHash::Sha256).toHex())}};
+        for (auto it = changes.begin(); it != changes.end(); ++it) {
+            if (it.value().isNull())
+                asset.remove(it.key());
+            else
+                asset[it.key()] = it.value();
+        }
+        return QJsonDocument(QJsonObject{{"version", version}, {"assets", QJsonArray{asset}}}).toJson();
+    }
+    QByteArray sign(const QByteArray &bytes, const QString &key = {}) const
+    {
+        const QString path = dir.filePath("signed");
+        QFile::remove(path + ".sig");
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly))
+            return {};
+        file.write(bytes);
+        file.close();
+        QProcess keygen;
+        keygen.start("ssh-keygen", {"-Y", "sign", "-f", key.isEmpty() ? dir.filePath("key") : key, "-n", "tether-update", path});
+        keygen.waitForFinished(20000);
+        QFile signature(path + ".sig");
+        return signature.open(QIODevice::ReadOnly) ? signature.readAll() : QByteArray();
+    }
+    // What GitHub's API answers for the newest release, its files on web.
+    void publish(WebServer &web, const QString &version, const QByteArray &list, const QByteArray &signature,
+                 const QByteArray &file) const
+    {
+        const QString pkg = name.isEmpty() ? QString("tether-%1-1-x86_64.pkg.tar.zst").arg(version) : name;
+        QJsonArray assets;
+        auto add = [&](const QString &asset, const QByteArray &bytes) {
+            if (bytes.isNull())
+                return;
+            const QString path = "/assets/" + asset;
+            web.files[path] = bytes;
+            assets << QJsonObject{{"name", asset}, {"size", bytes.size()}, {"url", web.url() + path},
+                                  {"browser_download_url", web.url() + path}};
+        };
+        add("SHA256SUMS", "unused here");
+        add("latest.json", list);
+        add("latest.json.sig", signature);
+        add(pkg, file);
+        web.files["/repos/oren1031/tether/releases/latest"] = QJsonDocument(QJsonObject{
+            {"tag_name", "v" + version}, {"body", "Notes"}, {"html_url", "https://example.com/release"},
+            {"assets", assets}}).toJson();
+    }
+    // A Tether older than the release, asking this web server as if it were GitHub.
+    void pointAt(Updater &updater, const WebServer &web) const
+    {
+        updater.setPublicKey(publicKey);
+        updater.setApiBase(web.url() + "/");
+        updater.setInstallKind("pacman");
+        updater.setDownloadDirectory(dir.filePath("updates"));
+    }
+};
+
 class TetherTests : public QObject {
     Q_OBJECT
+
+    // Runs a check for updates to its end and gives what Tether would say.
+    static QString checkedMessage(Updater &updater)
+    {
+        updater.check(false);
+        if (!QTest::qWaitFor([&] { return updater.state() != "checking"; }, 30000))
+            return "the check never finished";
+        return updater.message();
+    }
 
 private slots:
     void sshCommandUsesEveryField()
@@ -1077,39 +1198,280 @@ private slots:
             QVariantMap{{"name", "tether-0.3.0-1-x86_64.pkg.tar.zst"}},
             QVariantMap{{"name", "Tether-0.3.0-setup.exe"}},
             QVariantMap{{"name", "Tether-0.3.0-x86_64.AppImage"}},
-            QVariantMap{{"name", "Tether-0.3.0-android-arm64.apk"}}};
+            QVariantMap{{"name", "Tether-0.3.0-android-arm64.apk"}},
+            // What a signed release adds: older copies of Tether pick files by
+            // their endings and must not take any of these for a download.
+            QVariantMap{{"name", "latest.json"}}, QVariantMap{{"name", "latest.json.sig"}},
+            QVariantMap{{"name", "SHA256SUMS"}}, QVariantMap{{"name", "SHA256SUMS.sig"}}};
         QCOMPARE(Updater::pickAsset(assets, "pacman")["name"].toString(), QString("tether-0.3.0-1-x86_64.pkg.tar.zst"));
         QCOMPARE(Updater::pickAsset(assets, "windows")["name"].toString(), QString("Tether-0.3.0-setup.exe"));
         QCOMPARE(Updater::pickAsset(assets, "appimage")["name"].toString(), QString("Tether-0.3.0-x86_64.AppImage"));
         QCOMPARE(Updater::pickAsset(assets, "android")["name"].toString(), QString("Tether-0.3.0-android-arm64.apk"));
         QVERIFY(Updater::pickAsset(assets, "page").isEmpty());
-        // Your own server's latest.json: files relative to it, with checksums.
-        Updater mirror("oren1031/tether", "0.4.0");
-        const QJsonObject manifest{{"version", "0.5.1"}, {"notes", "Fixes"}, {"page", "https://example.com/r"},
-            {"assets", QJsonArray{QJsonObject{{"name", "tether-0.5.1-1-x86_64.pkg.tar.zst"}, {"size", 10},
-                                              {"sha256", "abc"}, {"url", "0.5.1/tether-0.5.1-1-x86_64.pkg.tar.zst"}}}}};
-        QVERIFY(mirror.readRelease(manifest, QUrl("https://tether.example.com/latest.json")));
-        QCOMPARE(mirror.latestVersion(), QString("0.5.1"));
-        // The file and its checksum only exist for systems the asset is for.
-        if (mirror.installKind() == "pacman") {
-            QCOMPARE(mirror.expectedSha256(), QString("abc"));
-            QCOMPARE(mirror.sources().value(0).toString(),
-                     QString("https://tether.example.com/0.5.1/tether-0.5.1-1-x86_64.pkg.tar.zst"));
-        }
-        // GitHub's: the API link first (it works when download links don't), then the download link.
-        const QJsonObject github{{"tag_name", "v0.5.1"}, {"body", "Fixes"},
-            {"assets", QJsonArray{QJsonObject{{"name", "tether-0.5.1-1-x86_64.pkg.tar.zst"}, {"size", 10},
-                                              {"digest", "sha256:def"},
-                                              {"url", "https://api.github.com/repos/o/t/releases/assets/1"},
-                                              {"browser_download_url", "https://github.com/o/t/releases/download/v0.5.1/x"}}}}};
-        QVERIFY(mirror.readRelease(github, QUrl()));
-        if (mirror.installKind() == "pacman") {
-            QCOMPARE(mirror.expectedSha256(), QString("def"));
-            QCOMPARE(mirror.sources().size(), 2);
-            QCOMPARE(mirror.sources().first().host(), QString("api.github.com"));
-        }
+        // A signed list: the file is taken from your own server's folder for
+        // that version, then from GitHub's API link (it works when the
+        // download links don't), then from the download link.
+        Updater updater("oren1031/tether", "0.4.0");
+        updater.setInstallKind("pacman");
+        const QString sum(64, 'a');
+        const QJsonObject list{{"version", "0.5.1"}, {"notes", "Fixes"}, {"page", "https://example.com/r"},
+            {"assets", QJsonArray{QJsonObject{{"name", "tether-0.5.1-1-x86_64.pkg.tar.zst"}, {"size", 10}, {"sha256", sum},
+                                              {"url", "https://elsewhere.example/evil.pkg.tar.zst"}}}}};
+        const QJsonArray github{QJsonObject{{"name", "tether-0.5.1-1-x86_64.pkg.tar.zst"}, {"size", 99},
+                                            {"digest", "sha256:def"},
+                                            {"url", "https://api.github.com/repos/o/t/releases/assets/1"},
+                                            {"browser_download_url", "https://github.com/o/t/releases/download/v0.5.1/x"}}};
+        QString problem;
+        QVERIFY2(updater.adopt(list, "0.5.1", QUrl("https://tether.example.com/latest.json"), github, &problem), qPrintable(problem));
+        QCOMPARE(updater.latestVersion(), QString("0.5.1"));
+        QVERIFY(updater.available());
+        // The checksum and size are the signed list's, never GitHub's own.
+        QCOMPARE(updater.expectedSha256(), sum);
+        QCOMPARE(updater.expectedSize(), qint64(10));
+        QCOMPARE(updater.sources().size(), 3);
+        // A link written into the list is not followed: the place is fixed.
+        QCOMPARE(updater.sources().value(0).toString(), QString("https://tether.example.com/0.5.1/tether-0.5.1-1-x86_64.pkg.tar.zst"));
+        QCOMPARE(updater.sources().value(1).host(), QString("api.github.com"));
+        QCOMPARE(updater.sources().value(2).host(), QString("github.com"));
+        QCOMPARE(updater.releaseUrl(), QString("https://example.com/r"));
+        // A list for another release than the one offered, or for one that
+        // isn't newer than this Tether, is refused: no going back.
+        QVERIFY(!updater.adopt(list, "0.5.2", {}, github, &problem));
+        Updater newer("oren1031/tether", "0.5.1");
+        newer.setInstallKind("pacman");
+        QVERIFY(!newer.adopt(list, "0.5.1", {}, github, &problem));
+        QVERIFY(!newer.available());
+        // So is a file name that could leave the downloads folder.
+        QJsonObject odd = list;
+        odd["assets"] = QJsonArray{QJsonObject{{"name", "../tether-0.5.1-1-x86_64.pkg.tar.zst"}, {"size", 10}, {"sha256", sum}}};
+        QVERIFY(!updater.adopt(odd, "0.5.1", {}, github, &problem));
         Updater none({}, "0.2.0");
         QVERIFY(!none.configured());
+    }
+
+    void updateServerMustBeHttps()
+    {
+        Updater updater("oren1031/tether", "0.5.4");
+        updater.setMirror("https://tether.example.com/");
+        QCOMPARE(updater.mirror(), QString("https://tether.example.com"));
+        QCOMPARE(updater.mirrorProblem(), QString());
+        // Over plain http anyone on the way could answer for the server.
+        updater.setMirror("http://tether.example.com");
+        QCOMPARE(updater.mirror(), QString());
+        QVERIFY(updater.mirrorProblem().contains("https"));
+        updater.setMirror("ftp://tether.example.com");
+        QCOMPARE(updater.mirror(), QString());
+        // This computer itself is how the tests stand in for a server.
+        updater.setMirror("http://127.0.0.1:8123");
+        QCOMPARE(updater.mirror(), QString("http://127.0.0.1:8123"));
+        QCOMPARE(updater.mirrorProblem(), QString());
+        updater.setMirror("");
+        QCOMPARE(updater.mirrorProblem(), QString());
+        QVERIFY(Updater::safeUrl(QUrl("https://github.com/x")));
+        QVERIFY(!Updater::safeUrl(QUrl("http://github.com/x")));
+        QVERIFY(!Updater::safeUrl(QUrl("file:///etc/passwd")));
+        QVERIFY(!Updater::safeUrl(QUrl("http://127.0.0.1.example.com/x")));
+    }
+
+    void updatesInstallOnlyWhatTheSignedListNames()
+    {
+        SignedRelease release;
+        if (!release.makeKey())
+            QSKIP("ssh-keygen is needed to sign a test release");
+        const QByteArray list = release.manifest("9.9.9"), signature = release.sign(list);
+        QVERIFY(!signature.isEmpty());
+
+        // A release as it should be: offered, downloaded, and kept.
+        {
+            WebServer web;
+            release.publish(web, "9.9.9", list, signature, release.package);
+            Updater updater("oren1031/tether", "0.5.4");
+            release.pointAt(updater, web);
+            QCOMPARE(checkedMessage(updater), QString("Tether 9.9.9 is available."));
+            QVERIFY(updater.available());
+            QCOMPARE(updater.source(), QString("GitHub"));
+            updater.download();
+            QTRY_COMPARE_WITH_TIMEOUT(updater.state(), QString("ready"), 30000);
+            QFile got(updater.downloadedFile());
+            QVERIFY(got.open(QIODevice::ReadOnly));
+            QCOMPARE(got.readAll(), release.package);
+            QCOMPARE(QDir(release.dir.filePath("updates")).entryList(QDir::Files).size(), 1);
+            QCOMPARE(updater.installCommand().value("program").toString(), QString("sudo"));
+        }
+        // The file isn't the one the list names: not kept, nothing to install.
+        {
+            WebServer web;
+            QDir(release.dir.filePath("updates")).removeRecursively();
+            release.publish(web, "9.9.9", list, signature, QByteArray(release.package).replace("the", "THE"));
+            Updater updater("oren1031/tether", "0.5.4");
+            release.pointAt(updater, web);
+            QCOMPARE(checkedMessage(updater), QString("Tether 9.9.9 is available."));
+            updater.download();
+            QTRY_COMPARE_WITH_TIMEOUT(updater.state(), QString("error"), 30000);
+            QVERIFY2(updater.message().contains("checksum"), qPrintable(updater.message()));
+            QCOMPARE(updater.downloadedFile(), QString());
+            QVERIFY(updater.installCommand().isEmpty());
+            QVERIFY(QDir(release.dir.filePath("updates")).entryList(QDir::Files).isEmpty());
+        }
+        // Longer than the list says: cut off, not kept.
+        {
+            WebServer web;
+            release.publish(web, "9.9.9", list, signature, release.package + "and more");
+            Updater updater("oren1031/tether", "0.5.4");
+            release.pointAt(updater, web);
+            QCOMPARE(checkedMessage(updater), QString("Tether 9.9.9 is available."));
+            updater.download();
+            QTRY_COMPARE_WITH_TIMEOUT(updater.state(), QString("error"), 30000);
+            QVERIFY(QDir(release.dir.filePath("updates")).entryList(QDir::Files).isEmpty());
+        }
+        // The list was changed after it was signed.
+        {
+            WebServer web;
+            release.publish(web, "9.9.9", QByteArray(list).replace("\"size\"", "\"size\" "), signature, release.package);
+            Updater updater("oren1031/tether", "0.5.4");
+            release.pointAt(updater, web);
+            QVERIFY2(checkedMessage(updater).contains("signature isn't Tether's"), qPrintable(updater.message()));
+            QCOMPARE(updater.state(), QString("error"));
+            QVERIFY(!updater.available());
+            updater.download();
+            QCOMPARE(updater.state(), QString("error"));
+            QVERIFY(!web.asked.contains("/assets/tether-9.9.9-1-x86_64.pkg.tar.zst"));
+        }
+        // Signed, but with somebody else's key.
+        {
+            WebServer web;
+            QCOMPARE(QProcess::execute("ssh-keygen", {"-q", "-t", "ed25519", "-N", "", "-f", release.dir.filePath("other")}), 0);
+            release.publish(web, "9.9.9", list, release.sign(list, release.dir.filePath("other")), release.package);
+            Updater updater("oren1031/tether", "0.5.4");
+            release.pointAt(updater, web);
+            QVERIFY2(checkedMessage(updater).contains("signature isn't Tether's"), qPrintable(updater.message()));
+            QVERIFY(!updater.available());
+        }
+        // No signature at all, as releases before signing were published.
+        {
+            WebServer web;
+            release.publish(web, "9.9.9", list, QByteArray(), release.package);
+            Updater updater("oren1031/tether", "0.5.4");
+            release.pointAt(updater, web);
+            QVERIFY2(checkedMessage(updater).contains("without a signature"), qPrintable(updater.message()));
+            QVERIFY(!updater.available());
+            // A quiet check (the one every few hours) says nothing, and offers nothing.
+            updater.check(true);
+            QTest::qWait(300);
+            QTRY_VERIFY(web.asked.count("/repos/oren1031/tether/releases/latest") >= 2);
+            QTest::qWait(200);
+            QCOMPARE(updater.state(), QString("idle"));
+            QVERIFY(!updater.available());
+        }
+        // A properly signed list of an older release, offered as the new one.
+        {
+            WebServer web;
+            const QByteArray old = release.manifest("9.9.8");
+            release.name = "tether-9.9.8-1-x86_64.pkg.tar.zst";
+            release.publish(web, "9.9.9", old, release.sign(old), release.package);
+            release.name.clear();
+            Updater updater("oren1031/tether", "0.5.4");
+            release.pointAt(updater, web);
+            QVERIFY2(checkedMessage(updater).contains("is for Tether 9.9.8, not 9.9.9"), qPrintable(updater.message()));
+            QVERIFY(!updater.available());
+        }
+        // A signed list with no checksum, a bad one, or no size for the file.
+        for (const QJsonObject &change : {QJsonObject{{"sha256", QJsonValue()}}, QJsonObject{{"sha256", "abc"}},
+                                          QJsonObject{{"size", QJsonValue()}}, QJsonObject{{"size", 0}}}) {
+            WebServer web;
+            const QByteArray bare = release.manifest("9.9.9", change);
+            release.publish(web, "9.9.9", bare, release.sign(bare), release.package);
+            Updater updater("oren1031/tether", "0.5.4");
+            release.pointAt(updater, web);
+            QVERIFY2(checkedMessage(updater).contains("no checksum or size"), qPrintable(updater.message()));
+            QVERIFY(!updater.available());
+        }
+        // Without ssh-keygen the signature can't be checked, so nothing is offered.
+        {
+            WebServer web;
+            release.publish(web, "9.9.9", list, signature, release.package);
+            Updater updater("oren1031/tether", "0.5.4");
+            release.pointAt(updater, web);
+            updater.setKeygen({});
+            QVERIFY2(checkedMessage(updater).contains("ssh-keygen"), qPrintable(updater.message()));
+            QVERIFY(!updater.available());
+        }
+        // The key built into Tether is not the test's: its releases don't pass.
+        {
+            WebServer web;
+            release.publish(web, "9.9.9", list, signature, release.package);
+            Updater updater("oren1031/tether", "0.5.4");
+            release.pointAt(updater, web);
+            updater.setPublicKey({});
+            QVERIFY2(checkedMessage(updater).contains("signature isn't Tether's"), qPrintable(updater.message()));
+        }
+    }
+
+    void updatesFromYourOwnServerAreCheckedTheSameWay()
+    {
+        SignedRelease release;
+        if (!release.makeKey())
+            QSKIP("ssh-keygen is needed to sign a test release");
+        const QByteArray list = release.manifest("9.9.9"), signature = release.sign(list);
+        const QString file = "/9.9.9/tether-9.9.9-1-x86_64.pkg.tar.zst";
+
+        // The server has the signed list and the file: GitHub isn't asked.
+        {
+            WebServer mirror, github;
+            mirror.files = {{"/latest.json", list}, {"/latest.json.sig", signature}, {file, release.package}};
+            Updater updater("oren1031/tether", "0.5.4");
+            release.pointAt(updater, github);
+            updater.setMirror(mirror.url());
+            QCOMPARE(checkedMessage(updater), QString("Tether 9.9.9 is available."));
+            QCOMPARE(updater.source(), QString("127.0.0.1"));
+            updater.download();
+            QTRY_COMPARE_WITH_TIMEOUT(updater.state(), QString("ready"), 30000);
+            QVERIFY(github.asked.isEmpty());
+        }
+        // The server's list was tampered with: GitHub's release is used instead.
+        {
+            WebServer mirror, github;
+            const QByteArray forged = QByteArray(list).replace("9.9.9", "9.9.7");
+            mirror.files = {{"/latest.json", forged}, {"/latest.json.sig", signature},
+                            {"/9.9.7/tether-9.9.7-1-x86_64.pkg.tar.zst", "another program"}};
+            release.publish(github, "9.9.9", list, signature, release.package);
+            Updater updater("oren1031/tether", "0.5.4");
+            release.pointAt(updater, github);
+            updater.setMirror(mirror.url());
+            QCOMPARE(checkedMessage(updater), QString("Tether 9.9.9 is available."));
+            QCOMPARE(updater.source(), QString("GitHub"));
+        }
+        // The server has the list without a signature, and GitHub can't be
+        // reached: nothing is offered.
+        {
+            WebServer mirror, github;
+            mirror.files = {{"/latest.json", list}, {file, release.package}};
+            Updater updater("oren1031/tether", "0.5.4");
+            release.pointAt(updater, github);
+            updater.setMirror(mirror.url());
+            checkedMessage(updater);
+            QCOMPARE(updater.state(), QString("error"));
+            QVERIFY(!updater.available());
+        }
+        // The server's copy of the file is wrong: GitHub's copy of the same
+        // release is downloaded, and must match the same signed list.
+        {
+            WebServer mirror, github;
+            QDir(release.dir.filePath("updates")).removeRecursively();
+            mirror.files = {{"/latest.json", list}, {"/latest.json.sig", signature}, {file, QByteArray(release.package).replace("the", "THE")}};
+            release.publish(github, "9.9.9", list, signature, release.package);
+            Updater updater("oren1031/tether", "0.5.4");
+            release.pointAt(updater, github);
+            updater.setMirror(mirror.url());
+            QCOMPARE(checkedMessage(updater), QString("Tether 9.9.9 is available."));
+            QCOMPARE(updater.source(), QString("127.0.0.1"));
+            updater.download();
+            QTRY_COMPARE_WITH_TIMEOUT(updater.state(), QString("ready"), 30000);
+            QCOMPARE(updater.source(), QString("GitHub"));
+            QFile got(updater.downloadedFile());
+            QVERIFY(got.open(QIODevice::ReadOnly));
+            QCOMPARE(got.readAll(), release.package);
+        }
     }
 
     void assistantCanUseClaudeCodeOnASubscription()
@@ -1467,6 +1829,37 @@ private slots:
         QCOMPARE(palette[8].toString(), QString("#7a7a7a"));  // bright black is muted
         QCOMPARE(palette[10].toString(), QString("#00ff00")); // missing brights use the normal color
         QCOMPARE(palette[7].toString(), QString("#ffffff"));
+    }
+
+    // Servers send whatever they like; the terminal must take any bytes
+    // without crashing (and under the sanitizers, without misusing memory).
+    void terminalSurvivesRandomOutput()
+    {
+        TerminalView view;
+        view.setSize(QSizeF(640, 300));
+        QRandomGenerator random(20261109); // the same bytes on every run
+        const QList<QByteArray> pieces{"\x1b[", "\x1b]", "\x1b[?1049h", "\x1b[?1049l", "\x1b[2J", "\x1b[999;999H", "\x1b[38;2;", "\x1bP",
+                                       "\x1b\\", "\x07", "\x9b", "\x90", "\xff\xfe", "\xe2\x82", "\x1b[1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1m",
+                                       "\x1b]52;c;AAAA\x07", "\x1b[2000000000C", "\x1b[5000S", "\x1b[@", "\x1b[3000M", "\x1b#8", "\x1b(0"};
+        for (int round = 0; round < 400; ++round) {
+            QByteArray data;
+            const int length = 1 + int(random.bounded(2048));
+            while (data.size() < length) {
+                if (random.bounded(3) == 0) {
+                    data += pieces.at(int(random.bounded(uint(pieces.size()))));
+                } else {
+                    data += char(random.bounded(256));
+                }
+            }
+            view.feed(data);
+            if (round % 50 == 0)
+                view.setSize(QSizeF(100 + random.bounded(700), 60 + random.bounded(400)));
+            // Reading the screen back walks every cell.
+            QVERIFY(view.screenText(view.rows()).size() >= 0);
+            QVERIFY(view.lineText(view.scrollbackLines()).size() >= 0);
+        }
+        view.feed("\x1b" "c\x1b[2J\x1b[Hstill works"); // reset, then plain text
+        QVERIFY(view.screenText(view.rows()).contains("still works"));
     }
 
     void terminalKeepsTheScreenAndHistory()

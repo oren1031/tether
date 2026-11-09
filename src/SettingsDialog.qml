@@ -387,7 +387,8 @@ TSheet {
                     }
                     Row_ {
                         label: qsTr("Update server")
-                        note: updater.source ? qsTr("Last found on %1. GitHub is used when this server can't be reached.").arg(updater.source)
+                        note: updater.mirrorProblem ? updater.mirrorProblem
+                            : updater.source ? qsTr("Last found on %1. GitHub is used when this server can't be reached.").arg(updater.source)
                                              : qsTr("Your own server with Tether's releases (see bin/mirror-release), checked before GitHub. Blank uses GitHub alone.")
                         TField {
                             width: 240
