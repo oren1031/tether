@@ -71,22 +71,46 @@ FocusScope {
                     send(backend.snippetPayload(s, { host: profile.host || "", user: profile.user || "" }))
     }
 
+    // The backend's answers carry this, so each pane hears only its own.
+    readonly property string token: "pane-" + Math.random().toString(36).slice(2)
+
     Timer {
         id: startupWait
         property int tries: 0
         interval: 700
         repeat: true
+        function ready() {
+            const profile = pane.launch.profile || {}
+            stop()
+            startupSettle.interval = profile.kind === "ssh" && backend.settings.shareConnections ? 900 : 2500
+            startupSettle.start()
+        }
         onTriggered: {
             const profile = pane.launch.profile || {}
             if (pane.ended || ++tries > 130) {
                 stop()
                 return
             }
-            if (profile.kind === "ssh" && !backend.connectionReady(profile))
+            // ssh is asked without waiting for it; onConnectionChecked hears.
+            if (profile.kind === "ssh")
+                backend.checkConnection(profile, pane.token)
+            else
+                ready()
+        }
+    }
+    Connections {
+        target: backend
+        function onConnectionChecked(token, ready) {
+            if (token === pane.token && ready && startupWait.running)
+                startupWait.ready()
+        }
+        function onHostKeyForgotten(token, error) {
+            if (token !== pane.token)
                 return
-            stop()
-            startupSettle.interval = profile.kind === "ssh" && backend.settings.shareConnections ? 900 : 2500
-            startupSettle.start()
+            if (error)
+                forgetError.text = error
+            else
+                pane.reconnectRequested()
         }
     }
     Timer {
@@ -247,11 +271,8 @@ FocusScope {
                 kind: "danger"
                 text: qsTr("Forget old key")
                 onClicked: {
-                    const error = backend.forgetHostKey(pane.launch.profile || {})
-                    if (error)
-                        forgetError.text = error
-                    else
-                        pane.reconnectRequested()
+                    forgetError.text = ""
+                    backend.forgetHostKey(pane.launch.profile || {}, pane.token)
                 }
             }
             TButton {

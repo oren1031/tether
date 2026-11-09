@@ -1071,11 +1071,25 @@ TSheet {
             loginName.forceActiveFocus()
         }
 
+        // The keyring answers in its own time (it may ask to be unlocked),
+        // so the sheet closes when identitySaved says the login is in.
+        property bool saving: false
         function save() {
+            if (saving)
+                return
             sheetError = backend.saveIdentity({ id: login ? login.id : "", name: loginName.text, user: loginUser.text,
                                                 identityFile: loginKey.text }, loginPassword.text, forget.checked)
-            if (!sheetError)
-                close()
+            saving = !sheetError
+        }
+        Connections {
+            target: backend
+            enabled: loginSheet.saving
+            function onIdentitySaved(error) {
+                loginSheet.saving = false
+                loginSheet.sheetError = error
+                if (!error)
+                    loginSheet.close()
+            }
         }
 
         contentItem: GridLayout {
