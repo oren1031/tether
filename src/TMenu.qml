@@ -6,6 +6,11 @@ import Tether
 Menu {
     id: menu
     padding: 5
+    // Kept clear of a phone's status and navigation bars.
+    topMargin: Style.safeTop
+    bottomMargin: Style.safeBottom
+    leftMargin: Style.safeLeft
+    rightMargin: Style.safeRight
     font.family: Style.fontFamily
     font.pixelSize: Style.fontSize
 

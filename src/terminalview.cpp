@@ -301,12 +301,27 @@ void TerminalView::setSecretInput(bool on) {
         return;
     m_secretInput = on;
     m_composing.clear();
-    // Tell the keyboard its kind of field changed, so it switches modes.
-    if (QGuiApplication::inputMethod()) {
-        QGuiApplication::inputMethod()->reset();
-        QGuiApplication::inputMethod()->update(Qt::ImHints | Qt::ImEnabled);
-    }
     emit secretInputChanged();
+    // Tell the keyboard its kind of field changed, so it switches modes. An
+    // on-screen keyboard only takes the new mode when it's shown again, and
+    // would otherwise close; a password prompt also brings it up, since the
+    // next thing to do is type.
+    QInputMethod *keyboard = QGuiApplication::inputMethod();
+    if (!keyboard || !hasActiveFocus())
+        return;
+    const bool shown = keyboard->isVisible();
+    keyboard->reset();
+    keyboard->update(Qt::ImHints | Qt::ImEnabled);
+    if (shown || (on && touchKeyboard()))
+        keyboard->show();
+}
+
+bool TerminalView::touchKeyboard() {
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
+    return true;
+#else
+    return false;
+#endif
 }
 
 void TerminalView::answerHostKey(bool trust) {
@@ -957,6 +972,16 @@ void TerminalView::typeCharacters(const QString &text) {
 // "yes" would never arrive. So composing text is typed as it grows, and when
 // the keyboard changes it, backspaces take back what differs.
 void TerminalView::inputMethodEvent(QInputMethodEvent *event) {
+    // Some keyboards delete by editing the text before the cursor instead of
+    // pressing Backspace. All they can see there is the padding (see
+    // inputMethodQuery), so each character they remove is a Backspace.
+    if (event->replacementStart() < 0 && event->replacementLength() > 0) {
+        const int erase = qMin(event->replacementLength(), -event->replacementStart());
+        clearSelection();
+        scrollToBottom();
+        for (int i = 0; i < erase; ++i)
+            vterm_keyboard_key(m_vt, VTERM_KEY_BACKSPACE, VTERM_MOD_NONE);
+    }
     const QString target = event->commitString() + event->preeditString();
     int common = 0;
     while (common < m_composing.size() && common < target.size() && m_composing.at(common) == target.at(common))
@@ -975,6 +1000,14 @@ void TerminalView::inputMethodEvent(QInputMethodEvent *event) {
     event->accept();
 }
 
+Qt::InputMethodHints TerminalView::inputMethodHints() const {
+    // Sensitive data keeps touch keyboards from holding words back for
+    // suggestions, so each letter reaches the terminal as it's typed.
+    if (m_secretInput)
+        return Qt::ImhHiddenText | Qt::ImhSensitiveData | Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase;
+    return Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase | Qt::ImhSensitiveData | Qt::ImhPreferLatin;
+}
+
 QVariant TerminalView::inputMethodQuery(Qt::InputMethodQuery query) const {
     switch (query) {
     case Qt::ImEnabled:
@@ -984,20 +1017,22 @@ QVariant TerminalView::inputMethodQuery(Qt::InputMethodQuery query) const {
     case Qt::ImFont:
         return m_font;
     // Keyboards ask what surrounds the cursor; the word being composed is all
-    // they can edit, since what's sent is out of their hands.
+    // they can really edit, since what's sent is out of their hands. A few
+    // spaces of padding come before it, so a keyboard that deletes by
+    // removing the character before the cursor always finds one to remove.
     case Qt::ImSurroundingText:
-        return m_composing;
+        return QString(InputPadding, u' ') + m_composing;
     case Qt::ImCursorPosition:
     case Qt::ImAnchorPosition:
-        return int(m_composing.size());
+        return int(InputPadding + m_composing.size());
     case Qt::ImCurrentSelection:
         return QString();
+    // A Return key that types Enter; the default "Done" closes the keyboard
+    // after every command.
+    case Qt::ImEnterKeyType:
+        return int(Qt::EnterKeyReturn);
     case Qt::ImHints:
-        // Sensitive data keeps touch keyboards from holding words back for
-        // suggestions, so each letter reaches the terminal as it's typed.
-        if (m_secretInput)
-            return int(Qt::ImhHiddenText | Qt::ImhSensitiveData | Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase);
-        return int(Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase | Qt::ImhSensitiveData | Qt::ImhPreferLatin);
+        return int(inputMethodHints());
     default:
         return QQuickPaintedItem::inputMethodQuery(query);
     }
@@ -1005,6 +1040,8 @@ QVariant TerminalView::inputMethodQuery(Qt::InputMethodQuery query) const {
 
 void TerminalView::focusInEvent(QFocusEvent *event) {
     QQuickPaintedItem::focusInEvent(event);
+    if (m_secretInput && touchKeyboard() && QGuiApplication::inputMethod())
+        QGuiApplication::inputMethod()->show();
     vterm_state_focus_in(vterm_obtain_state(m_vt));
     m_blinkOn = true;
     if (m_blinkSetting || m_cursorBlinkRequested)

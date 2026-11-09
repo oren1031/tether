@@ -55,6 +55,10 @@ private:
     // Asks yes or no in the terminal and through hostKeyQuestion.
     bool askTrust(const QString &prompt);
     QByteArray takeInput();
+    // A question can wait a long time for its answer, and the connection can
+    // drop meanwhile (a phone changing networks). True once that's seen, so
+    // the answer isn't sent into a dead connection and called a wrong password.
+    bool linkLost();
 
     QVariantMap m_settings;
     QMutex m_mutex;
@@ -64,4 +68,6 @@ private:
     std::atomic<bool> m_resized{false};
     std::atomic<bool> m_stopping{false};
     std::atomic<int> m_trust{-1};
+    int m_socket = -1;   // the connection's socket, once there is one
+    bool m_lost = false;
 };

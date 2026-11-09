@@ -9,6 +9,12 @@
 
 #include <libssh/libssh.h>
 
+#ifndef Q_OS_WIN
+#include <cerrno>
+#include <poll.h>
+#include <sys/socket.h>
+#endif
+
 namespace {
 
 QString expandHome(const QString &path) {
@@ -68,6 +74,7 @@ void SshSession::answerHostKey(bool trust) { m_trust = trust ? 1 : 0; }
 bool SshSession::askTrust(const QString &prompt) {
     say(prompt);
     QByteArray line;
+    int waited = 0;
     while (!m_stopping) {
         const int decided = m_trust.exchange(-1);
         if (decided >= 0) {
@@ -98,8 +105,29 @@ bool SshSession::askTrust(const QString &prompt) {
             }
         }
         msleep(20);
+        if (++waited % 25 == 0 && linkLost())
+            break;
     }
     return false;
+}
+
+bool SshSession::linkLost() {
+    if (m_lost || m_socket < 0)
+        return m_lost;
+#ifndef Q_OS_WIN
+    struct pollfd state{m_socket, POLLIN, 0};
+    if (poll(&state, 1, 0) > 0) {
+        if (state.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            m_lost = true;
+        } else if (state.revents & POLLIN) {
+            // Readable with nothing to read is the other end closing.
+            char byte;
+            const ssize_t got = recv(m_socket, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+            m_lost = got == 0 || (got < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR);
+        }
+    }
+#endif
+    return m_lost;
 }
 
 bool SshSession::forgetHost(const QString &knownHosts, const QString &host, int port) {
@@ -153,6 +181,7 @@ QString SshSession::ask(const QString &prompt, bool echo) {
         return answer;
     };
     QByteArray line;
+    int waited = 0;
     while (!m_stopping) {
         const QByteArray input = takeInput();
         for (const char c : input) {
@@ -193,6 +222,9 @@ QString SshSession::ask(const QString &prompt, bool echo) {
             }
         }
         msleep(20);
+        // About twice a second: a dropped connection ends the question.
+        if (++waited % 25 == 0 && linkLost())
+            break;
     }
     return done({});
 }
@@ -237,6 +269,16 @@ void SshSession::run() {
         emit finished(ConnectionFailed);
         return;
     }
+    m_socket = int(ssh_get_fd(s.session));
+    // The connection dropping while a question waited: say so and end as a
+    // dropped connection, which the pane reconnects from.
+    auto lost = [&] {
+        if (!m_lost)
+            return false;
+        say(QString("\nConnection to %1 lost.\n").arg(host));
+        emit finished(ConnectionFailed);
+        return true;
+    };
 
     // The server's host key, checked against known_hosts as ssh does.
     {
@@ -268,6 +310,8 @@ void SshSession::run() {
                 "Someone could be intercepting the connection; only go on if you know\n"
                 "the server was reinstalled or replaced.\n"
                 "Forget the old key and trust the new one (yes/no)? ").arg(type.toUpper(), host, fingerprint));
+            if (!trust && lost())
+                return;
             if (!trust) {
                 say("Host key verification failed.\n");
                 emit finished(LoginRefused);
@@ -285,6 +329,8 @@ void SshSession::run() {
                                                 "%2 key fingerprint is %3.\n"
                                                 "Are you sure you want to continue connecting (yes/no)? ")
                                             .arg(host, type.toUpper(), fingerprint));
+            if (!trust && lost())
+                return;
             if (!trust) {
                 say("Host key verification failed.\n");
                 emit finished(LoginRefused);
@@ -323,6 +369,8 @@ void SshSession::run() {
                 break;
             }
             passphrase = ask(QString("Enter passphrase for key '%1': ").arg(keyFile), false);
+            if (lost())
+                return;
         }
         if (key) {
             authenticated = ssh_userauth_publickey(s.session, nullptr, key) == SSH_AUTH_SUCCESS;
@@ -339,9 +387,18 @@ void SshSession::run() {
         if (methods & SSH_AUTH_METHOD_PASSWORD) {
             if (password.isEmpty() || attempt > 0)
                 password = ask(QString("%1@%2's password: ").arg(user, host), false);
+            if (lost())
+                return;
             if (m_stopping)
                 break;
-            authenticated = ssh_userauth_password(s.session, nullptr, password.toUtf8().constData()) == SSH_AUTH_SUCCESS;
+            const int result = ssh_userauth_password(s.session, nullptr, password.toUtf8().constData());
+            // An error, unlike a refusal, is the connection failing: not a wrong password.
+            if (result == SSH_AUTH_ERROR && !m_stopping) {
+                say(QString("\nConnection to %1 lost: %2\n").arg(host, QString::fromUtf8(ssh_get_error(s.session))));
+                emit finished(ConnectionFailed);
+                return;
+            }
+            authenticated = result == SSH_AUTH_SUCCESS;
         } else if (methods & SSH_AUTH_METHOD_INTERACTIVE) {
             int result = ssh_userauth_kbdint(s.session, nullptr, nullptr);
             while (result == SSH_AUTH_INFO && !m_stopping) {
@@ -350,6 +407,8 @@ void SshSession::run() {
                     char echo = 0;
                     const QString prompt = QString::fromUtf8(ssh_userauth_kbdint_getprompt(s.session, i, &echo));
                     const QString answer = ask(prompt, echo);
+                    if (lost())
+                        return;
                     ssh_userauth_kbdint_setanswer(s.session, i, answer.toUtf8().constData());
                 }
                 result = ssh_userauth_kbdint(s.session, nullptr, nullptr);

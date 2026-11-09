@@ -32,6 +32,27 @@ ApplicationWindow {
     readonly property bool narrow: width < 720
     readonly property bool touch: backend.touchUi
     Binding { target: Style; property: "compact"; value: win.width < 600 }
+    // Phones draw under the status and navigation bars, and the keyboard
+    // covers the bottom of the window. The window's own content is kept
+    // clear of them by Qt; sheets and menus use these.
+    //
+    // Qt counts the keyboard in the bottom margin most of the time but loses
+    // it when the keyboard changes its mode (a password prompt ending), so
+    // how much of the window it covers is measured here as well. Qt for
+    // Android gives the keyboard's rectangle in screen pixels.
+    readonly property real keyboardCover: {
+        const r = Qt.inputMethod.keyboardRectangle
+        if (!touch || !Qt.inputMethod.visible || r.height <= 0)
+            return 0
+        const scale = r.y + r.height > Screen.height * 1.2 ? Screen.devicePixelRatio : 1
+        return Math.max(0, Math.min(height, y + height - r.y / scale))
+    }
+    readonly property real safeBottom: Math.max(SafeArea.margins.bottom, keyboardCover)
+    bottomPadding: safeBottom
+    Binding { target: Style; property: "safeTop"; value: win.SafeArea.margins.top }
+    Binding { target: Style; property: "safeBottom"; value: win.safeBottom }
+    Binding { target: Style; property: "safeLeft"; value: win.SafeArea.margins.left }
+    Binding { target: Style; property: "safeRight"; value: win.SafeArea.margins.right }
     property bool sidebarVisible: true
     onNarrowChanged: if (narrow && tabModel.count > 0) sidebarVisible = false
     property bool quitting: false

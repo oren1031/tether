@@ -102,6 +102,47 @@ private slots:
         QVERIFY(backend.launch(p).value("error").toString().contains("picocom"));
     }
 
+    void terminalIsATextFieldToTouchKeyboards()
+    {
+        TerminalView view;
+        view.setSize(QSizeF(800, 400));
+        // Qt for Android drops everything an on-screen keyboard sends as text
+        // (every letter) unless the focused item has a property with this
+        // name, as Qt's own text fields do.
+        QVERIFY(view.property("inputMethodHints").isValid());
+        QInputMethodQueryEvent query(Qt::ImHints | Qt::ImEnterKeyType | Qt::ImSurroundingText | Qt::ImCursorPosition);
+        QCoreApplication::sendEvent(&view, &query);
+        const auto hints = Qt::InputMethodHints(query.value(Qt::ImHints).toInt());
+        QVERIFY(hints.testFlag(Qt::ImhNoPredictiveText));
+        QVERIFY(!hints.testFlag(Qt::ImhHiddenText));
+        QCOMPARE(view.property("inputMethodHints").toInt(), int(hints));
+        // A Return key: "Done", the default, closes the keyboard after every command.
+        QCOMPARE(query.value(Qt::ImEnterKeyType).toInt(), int(Qt::EnterKeyReturn));
+        // Something to delete before the cursor, for keyboards that delete that way.
+        const QString around = query.value(Qt::ImSurroundingText).toString();
+        QVERIFY(!around.isEmpty());
+        QCOMPARE(query.value(Qt::ImCursorPosition).toInt(), int(around.size()));
+
+#ifndef Q_OS_WIN
+        // Such a keyboard removing the character before the cursor is a Backspace.
+        QSignalSpy done(&view, &TerminalView::finished);
+        QVERIFY(view.start("/bin/sh", {"-c", "stty -echo; read a; echo \"got:$a\""}));
+        QTest::qWait(300);
+        auto commit = [&](const QString &text, int from = 0, int length = 0) {
+            QInputMethodEvent event;
+            event.setCommitString(text, from, length);
+            QCoreApplication::sendEvent(&view, &event);
+        };
+        commit("l"); commit("s"); commit("x"); commit("y");
+        commit({}, -1, 1);       // one character back
+        commit({}, -1, 1);
+        commit(" "); commit("-"); commit("l");
+        commit("\n");
+        QVERIFY(done.wait(5000));
+        QVERIFY2(view.screenText(10).contains("got:ls -l"), qPrintable(view.screenText(10)));
+#endif
+    }
+
     void touchKeyboardTextReachesTheProgram()
     {
 #ifndef Q_OS_WIN

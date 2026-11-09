@@ -22,6 +22,32 @@ TextField {
     selectedTextColor: "white"
     selectByMouse: true
 
+    // On a phone the keyboard covers the lower half of a form: the field
+    // being typed in scrolls into view, when it's tapped and when the
+    // keyboard comes up.
+    function reveal() {
+        if (!activeFocus)
+            return
+        let view = parent
+        while (view && !(view instanceof Flickable))
+            view = view.parent
+        if (!view)
+            return
+        const top = mapToItem(view.contentItem, 0, 0).y - 16
+        const bottom = top + height + 32
+        if (top < view.contentY)
+            view.contentY = Math.max(0, top)
+        else if (bottom > view.contentY + view.height)
+            view.contentY = bottom - view.height
+    }
+    Timer { id: revealTimer; interval: 120; onTriggered: control.reveal() }
+    onActiveFocusChanged: if (activeFocus && Style.touch) revealTimer.restart()
+    Connections {
+        target: Style
+        enabled: control.activeFocus
+        function onSafeBottomChanged() { revealTimer.restart() }
+    }
+
     background: Rectangle {
         radius: 7
         color: Style.fieldFill

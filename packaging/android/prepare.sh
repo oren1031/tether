@@ -28,6 +28,12 @@ grep -q REQUEST_INSTALL_PACKAGES "$manifest" || \
     sed -i 's#^\([[:space:]]*\)<application\b#\1<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>\n\1<application#' "$manifest"
 grep -q REQUEST_INSTALL_PACKAGES "$manifest" || { echo "couldn't add the install permission" >&2; exit 1; }
 
+# The window always makes room for the on-screen keyboard. Left to itself Qt
+# picks between that and sliding the window up, by the size of the field.
+grep -q windowSoftInputMode "$manifest" || \
+    sed -i 's#android:launchMode="singleTop"#android:launchMode="singleTop"\n            android:windowSoftInputMode="adjustResize"#' "$manifest"
+grep -q 'windowSoftInputMode="adjustResize"' "$manifest" || { echo "couldn't set the keyboard mode" >&2; exit 1; }
+
 for size in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
     dir="$out/res/mipmap-${size%%:*}"
     mkdir -p "$dir"

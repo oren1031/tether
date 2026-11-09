@@ -94,6 +94,13 @@ QtObject {
     // when it's phone-narrow, and sheets then fill it.
     readonly property bool touch: backend.touchUi
     property bool compact: false
+    // How far the system's bars, a camera cutout, and the on-screen keyboard
+    // reach into the window; set by the window. The main window stays inside
+    // them on its own, sheets and menus are placed by these.
+    property real safeTop: 0
+    property real safeBottom: 0
+    property real safeLeft: 0
+    property real safeRight: 0
     readonly property int fontSize: (settings.interfaceFontSize || 13) + (touch ? 2 : 0)
     readonly property int smallFontSize: fontSize - 2
     readonly property int titleFontSize: fontSize + 2

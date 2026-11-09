@@ -40,6 +40,10 @@ class TerminalView : public QQuickPaintedItem {
     Q_PROPERTY(bool stickyCtrl READ stickyCtrl WRITE setStickyCtrl NOTIFY stickyChanged)
     Q_PROPERTY(bool stickyAlt READ stickyAlt WRITE setStickyAlt NOTIFY stickyChanged)
     Q_PROPERTY(bool secretInput READ secretInput NOTIFY secretInputChanged)
+    // Qt for Android only passes an on-screen keyboard's text to items that
+    // have a property with this name, as its own text fields do; without it
+    // letters never arrive, only the keys sent as key presses (digits, Enter).
+    Q_PROPERTY(Qt::InputMethodHints inputMethodHints READ inputMethodHints NOTIFY secretInputChanged)
 
 public:
     explicit TerminalView(QQuickItem *parent = nullptr);
@@ -85,6 +89,7 @@ public:
     // home, end, pgup, pgdn; honors the sticky Ctrl and Alt.
     Q_INVOKABLE void sendKey(const QString &name);
     bool secretInput() const { return m_secretInput; }
+    Qt::InputMethodHints inputMethodHints() const;
     bool stickyCtrl() const { return m_stickyCtrl; }
     void setStickyCtrl(bool on) { if (on != m_stickyCtrl) { m_stickyCtrl = on; emit stickyChanged(); } }
     bool stickyAlt() const { return m_stickyAlt; }
@@ -215,6 +220,8 @@ private:
     QString m_composing;  // composing text from a touch keyboard, already typed
     bool m_secretInput = false;  // a password prompt: the keyboard goes to password mode
     void setSecretInput(bool on);
+    static bool touchKeyboard();  // typing is on an on-screen keyboard (phones and tablets)
+    static constexpr int InputPadding = 8;  // spaces a keyboard is told are before the cursor
     int m_selectUnit = 0; // 0 characters, 1 words, 2 lines
     qint64 m_lastDoubleClick = 0;
     int m_mouseButtonsDown = 0;

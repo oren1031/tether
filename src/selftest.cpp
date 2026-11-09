@@ -21,7 +21,11 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QStandardPaths>
+#include <QThread>
 #include <QTimer>
+#include <QGuiApplication>
+#include <QQuickItem>
+#include <functional>
 
 #include <cstdio>
 
@@ -120,6 +124,44 @@ int finishSelfTest(QQmlApplicationEngine &engine, const QStringList &arguments) 
         report(text.contains(QString::number(view.columns())), "it sees the terminal's width",
                QString("%1 columns").arg(view.columns()));
     }
+
+#ifdef Q_OS_ANDROID
+    // 1b. Text from an on-screen keyboard, sent through Qt's own connection
+    //     to keyboards, the way Gboard sends letters. Qt drops it before it
+    //     reaches the terminal unless the terminal passes for a text field.
+    if (window) {
+        auto *view = new TerminalView(window->contentItem());
+        view->setSize(QSizeF(360, 200));
+        view->forceActiveFocus();
+        auto spin = [](int ms, const std::function<bool()> &until) {
+            QElapsedTimer timer;
+            timer.start();
+            while (timer.elapsed() < ms && !until())
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            return until();
+        };
+        if (!spin(4000, [&] { return QGuiApplication::focusObject() == view; })) {
+            print("info on-screen keyboard text not checked: the window isn't in front");
+        } else if (view->start("/system/bin/sh", {"-c", "read a; echo \"typed:$a\""})) {
+            spin(500, [] { return false; });
+            // From another thread, as a keyboard's calls arrive; they wait for this one.
+            QThread *keyboard = QThread::create([] {
+                for (const QString &text : {QString("tet"), QString("her"), QString("\n")})
+                    QJniObject::callStaticMethod<jboolean>("org/qtproject/qt/android/QtNativeInputConnection",
+                        "commitText", "(Ljava/lang/String;I)Z", QJniObject::fromString(text).object<jstring>(), jint(1));
+            });
+            keyboard->start();
+            const bool typed = spin(8000, [&] { return view->screenText(10).contains("typed:tether"); });
+            report(typed, "type with an on-screen keyboard", view->screenText(10).left(200).replace('\n', " | "));
+            spin(3000, [&] { return keyboard->isFinished(); });
+            if (keyboard->isFinished())
+                delete keyboard;
+        } else {
+            report(false, "start a program to type into");
+        }
+        delete view;
+    }
+#endif
 
 #ifdef Q_OS_WIN
     // 2. The vault's store, and tether.exe answering ssh's password prompt.
