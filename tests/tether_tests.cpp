@@ -632,6 +632,56 @@ private slots:
         }
     }
 
+    void apiKeyLivesInTheKeyring()
+    {
+        if (!qEnvironmentVariableIsEmpty("ANTHROPIC_API_KEY"))
+            QSKIP("ANTHROPIC_API_KEY is set here, which comes first.");
+        QTemporaryDir dir;
+        // A stand-in keyring: one entry, kept in a file.
+        const QString fake = dir.filePath("secret-tool"), ring = dir.filePath("keyring");
+        write(fake, QString("#!/bin/sh\necho \"$@\" >> '%1.calls'\ncase \"$1\" in\nstore) cat > '%1' ;;\n"
+                            "lookup) [ -f '%1' ] && cat '%1' ;;\nclear) rm -f '%1' ;;\nesac\n").arg(ring).toUtf8());
+        QFile::setPermissions(fake, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        auto ringHolds = [&] {
+            QFile file(ring);
+            return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString();
+        };
+
+        // A key an older Tether left in its file moves to the keyring, and
+        // the file goes once the keyring has it.
+        write(dir.filePath("key"), "sk-ant-from-file");
+        {
+            Assistant assistant(dir.filePath("key"), nullptr, fake);
+            QCOMPARE(assistant.keySource(), QString("saved"));
+            QTRY_COMPARE_WITH_TIMEOUT(assistant.keyStore(), QString("keyring"), 5000);
+            QTRY_VERIFY_WITH_TIMEOUT(!QFile::exists(dir.filePath("key")), 5000);
+            QCOMPARE(ringHolds(), QString("sk-ant-from-file"));
+        }
+        // Next start it comes from the keyring; a new key replaces it there.
+        {
+            Assistant assistant(dir.filePath("key"), nullptr, fake);
+            QTRY_COMPARE_WITH_TIMEOUT(assistant.keySource(), QString("saved"), 5000);
+            QCOMPARE(assistant.keyStore(), QString("keyring"));
+            QCOMPARE(assistant.saveKey("sk-ant-new"), QString());
+            QCOMPARE(assistant.keySource(), QString("saved"));
+            QTRY_COMPARE_WITH_TIMEOUT(ringHolds(), QString("sk-ant-new"), 5000);
+            QVERIFY(!QFile::exists(dir.filePath("key")));
+            // Removed: gone from the keyring too.
+            QCOMPARE(assistant.saveKey(""), QString());
+            QCOMPARE(assistant.keySource(), QString());
+            QTRY_VERIFY_WITH_TIMEOUT(!QFile::exists(ring), 5000);
+        }
+        // A keyring that won't take it: the file, readable only by the user.
+        write(fake, "#!/bin/sh\nexit 1\n");
+        {
+            Assistant assistant(dir.filePath("key"), nullptr, fake);
+            QCOMPARE(assistant.saveKey("sk-ant-fallback"), QString());
+            QTRY_COMPARE_WITH_TIMEOUT(assistant.keyStore(), QString("file"), 5000);
+            QCOMPARE(assistant.keySource(), QString("saved"));
+            QCOMPARE(QFileInfo(dir.filePath("key")).permissions() & (QFile::ReadOther | QFile::ReadGroup), QFile::Permissions());
+        }
+    }
+
     void updatesCompareVersionsAndPickTheRightDownload()
     {
         QCOMPARE(Updater::compareVersions("0.2.0", "0.1.9"), 1);
@@ -680,9 +730,36 @@ private slots:
 
     void assistantCanUseClaudeCodeOnASubscription()
     {
-        const QStringList args = Assistant::claudeCodeArguments("list ports", {{"kind", "local"}});
+        // The request isn't an argument, where the process list would show
+        // it to every user of the computer; it goes in on standard input.
+        const QStringList args = Assistant::claudeCodeArguments();
         QCOMPARE(args[0], QString("-p"));
-        QVERIFY(args[1].contains("list ports"));
+        QCOMPARE(args[1], QString("--output-format"));
+        QVERIFY(!args.join(' ').contains("Session:"));
+        {
+            QTemporaryDir bin;
+            const QString fake = bin.filePath("claude");
+            write(fake, QString("#!/bin/sh\necho \"$@\" > '%1'\ncat > '%2'\n"
+                                "echo '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,"
+                                "\"structured_output\":{\"command\":\"ss -tlnp\",\"explanation\":\"Lists.\",\"risky\":false}}'\n")
+                           .arg(bin.filePath("args"), bin.filePath("stdin")).toUtf8());
+            QFile::setPermissions(fake, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+            const QByteArray path = qgetenv("PATH"), home = qgetenv("HOME");
+            qputenv("PATH", bin.path().toUtf8() + ":" + path);
+            Assistant viaCode(bin.filePath("key"));
+            qputenv("PATH", path);
+            QCOMPARE(viaCode.claudeCode(), fake);
+            viaCode.setProvider("claude-code");
+            QSignalSpy answered(&viaCode, &Assistant::answered);
+            viaCode.ask("list the secret ports", {{"kind", "ssh"}, {"host", "web"}, {"user", "me"}});
+            QVERIFY(answered.wait(10000));
+            QCOMPARE(answered.first().first().toString(), QString("ss -tlnp"));
+            QFile sent(bin.filePath("stdin")), given(bin.filePath("args"));
+            QVERIFY(sent.open(QIODevice::ReadOnly) && given.open(QIODevice::ReadOnly));
+            const QString onStdin = QString::fromUtf8(sent.readAll()), asArgs = QString::fromUtf8(given.readAll());
+            QVERIFY(onStdin.contains("list the secret ports") && onStdin.contains("ssh to me@web"));
+            QVERIFY2(!asArgs.contains("secret ports") && !asArgs.contains("me@web"), qPrintable(asArgs));
+        }
         QVERIFY(args.contains("--json-schema"));
         // No tools: Claude Code only answers, it never runs anything itself.
         QCOMPARE(args[args.indexOf("--tools") + 1], QString());

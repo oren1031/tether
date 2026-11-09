@@ -1006,6 +1006,7 @@ TSheet {
                     Row_ {
                         label: qsTr("API key")
                         note: assistant.keySource === "environment" ? qsTr("Using ANTHROPIC_API_KEY from the environment.")
+                            : assistant.keyStore === "keyring" ? qsTr("Saved in your keyring.")
                             : assistant.keySource === "saved" ? qsTr("Saved in a file only you can read.")
                             : qsTr("Get one at console.anthropic.com.")
                         RowLayout {
