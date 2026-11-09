@@ -22,7 +22,7 @@ include(hardening.pri)
 # forkpty lives in libutil on glibc before 2.34; Android has it in libc.
 unix:!android:!macx: LIBS += -lutil
 win32 {
-    LIBS += -ladvapi32
+    LIBS += -ladvapi32 -luser32
     DESTDIR = $$OUT_PWD/bin
     RC_ICONS = pkgbuild/tether.ico
     QMAKE_TARGET_PRODUCT = Tether
