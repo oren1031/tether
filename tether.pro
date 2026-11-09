@@ -49,6 +49,7 @@ qtHaveModule(serialport) {
 HEADERS += \
     src/assistant.h \
     src/backend.h \
+    src/iconprovider.h \
     src/pseudoterminal.h \
     src/sftp.h \
     src/terminalview.h \

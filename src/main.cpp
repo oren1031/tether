@@ -14,6 +14,7 @@
 
 #include "assistant.h"
 #include "backend.h"
+#include "iconprovider.h"
 #include "sftp.h"
 #include "terminalview.h"
 #include "updater.h"
@@ -71,6 +72,7 @@ int main(int argc, char *argv[]) {
                      [&] { updater.setMirror(backend.settings().value("updateMirror").toString()); });
 
     QQmlApplicationEngine engine;
+    engine.addImageProvider("icon", new IconProvider);
     QObject::connect(&translator, &Translator::changed, &engine, &QQmlEngine::retranslate);
     engine.rootContext()->setContextProperty("translator", &translator);
     engine.rootContext()->setContextProperty("theme", &theme);

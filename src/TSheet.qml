@@ -30,6 +30,9 @@ Dialog {
     }
 
     modal: true
+    // Escape (Back on a phone) and its own buttons close a sheet; a stray
+    // click on the dimmed window doesn't, so a half-filled form isn't lost.
+    closePolicy: Popup.CloseOnEscape
     // Centered in that room, so buttons never sit under the navigation bar
     // and a sheet with fields moves up above the keyboard.
     parent: Overlay.overlay

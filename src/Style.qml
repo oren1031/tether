@@ -54,28 +54,58 @@ QtObject {
 
     // Text.
     readonly property color label: Qt.rgba(1, 1, 1, 0.88)
-    readonly property color secondaryLabel: Qt.rgba(1, 1, 1, 0.55)
-    readonly property color tertiaryLabel: Qt.rgba(1, 1, 1, 0.32)
+    // Each step still reads at 4.5:1 or better on every surface above,
+    // fields and grouped rows included (tertiary is 4.6:1 at its worst).
+    readonly property color secondaryLabel: Qt.rgba(1, 1, 1, 0.72)
+    readonly property color tertiaryLabel: Qt.rgba(1, 1, 1, 0.60)
+    // Errors as text; Style.red is for fills and is too dark to read.
+    readonly property color errorText: "#FF7A70"
 
     // Controls.
     readonly property color fill: Qt.rgba(1, 1, 1, 0.09)
     readonly property color fillHover: Qt.rgba(1, 1, 1, 0.13)
     readonly property color fillPressed: Qt.rgba(1, 1, 1, 0.18)
     readonly property color fieldFill: Qt.rgba(1, 1, 1, 0.06)
-    readonly property color fieldBorder: Qt.rgba(1, 1, 1, 0.10)
+    // The edge of a field, checkbox, or switch: 3:1 against what's around it.
+    readonly property color fieldBorder: Qt.rgba(1, 1, 1, 0.45)
     readonly property color selection: Qt.rgba(1, 1, 1, 0.10)
 
     readonly property color accent: accentFor(settings.accent)
     readonly property color accentHover: Qt.lighter(accent, 1.12)
     readonly property color accentPressed: Qt.darker(accent, 1.15)
-    readonly property color focusRing: tint(0.55)
-    // Text on the accent: black on light accents like yellow, else white.
-    readonly property bool lightAccent: 0.2126 * accent.r + 0.7152 * accent.g + 0.0722 * accent.b > 0.6
-    readonly property color onAccent: lightAccent ? Qt.rgba(0, 0, 0, 0.85) : "white"
-    readonly property color onAccentSecondary: lightAccent ? Qt.rgba(0, 0, 0, 0.6) : Qt.rgba(1, 1, 1, 0.78)
+    // The ring around whatever has keyboard focus: the accent, or near-white
+    // when a theme's accent is too dark to show on these surfaces.
+    readonly property color focusRing: contrast(accent, sheet) >= 3 ? accent : Qt.rgba(1, 1, 1, 0.85)
+    // Text and icons on the accent, whichever of near-black and white reads
+    // better: near-black on all eight accents here (5.1:1 or more, where
+    // white is 1.4 to 3.7), white on a theme's dark accent. Never name these
+    // "on…": QML takes such a name for a signal handler and drops the value.
+    readonly property color accentText: textOn(accent)
+    readonly property color accentTextSecondary: secondaryTextOn(accent)
 
     function tint(alpha) {
         return Qt.rgba(accent.r, accent.g, accent.b, alpha)
+    }
+
+    // WCAG relative luminance and contrast ratio of opaque colors.
+    function luminance(c) {
+        const f = v => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
+        return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b)
+    }
+    function contrast(a, b) {
+        const la = luminance(a), lb = luminance(b)
+        return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
+    }
+    function darkTextOn(fill) {
+        const dark = Qt.rgba(fill.r * 0.15, fill.g * 0.15, fill.b * 0.15, 1)
+        return contrast(dark, fill) >= contrast(Qt.rgba(1, 1, 1, 1), fill)
+    }
+    // Text and icons for a filled shape of any color.
+    function textOn(fill) {
+        return darkTextOn(fill) ? Qt.rgba(0, 0, 0, 0.85) : Qt.rgba(1, 1, 1, 1)
+    }
+    function secondaryTextOn(fill) {
+        return darkTextOn(fill) ? Qt.rgba(0, 0, 0, 0.8) : Qt.rgba(1, 1, 1, 0.85)
     }
 
     readonly property color blue: "#0A84FF"
@@ -104,8 +134,11 @@ QtObject {
     readonly property int fontSize: (settings.interfaceFontSize || 13) + (touch ? 2 : 0)
     readonly property int smallFontSize: fontSize - 2
     readonly property int titleFontSize: fontSize + 2
-    readonly property int controlHeight: touch ? 40 : fontSize + 15
-    readonly property int toolbarButton: touch ? 40 : 28
+    readonly property int controlHeight: touch ? 44 : fontSize + 15
+    readonly property int toolbarButton: touch ? 44 : 28
+    // Rows in menus, pop-up lists, and file lists; a finger needs 44.
+    readonly property int rowHeight: touch ? 44 : 26
+    readonly property bool mirrored: Qt.application.layoutDirection === Qt.RightToLeft
 
     readonly property int fast: 120
     readonly property int normal: 200
@@ -117,4 +150,5 @@ QtObject {
         return colors.background ? colors : theme.schemeColors("omarchy")
     }
     readonly property color terminalBackground: terminalColors.background
+    readonly property color terminalForeground: terminalColors.foreground || "#e6e6e6"
 }
