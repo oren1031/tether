@@ -188,7 +188,46 @@ int finishSelfTest(QQmlApplicationEngine &engine, const QStringList &arguments) 
     }
 #endif
 
-    // 3. ssh, which Tether runs for hosts.
+#ifndef Q_OS_ANDROID
+    // 2b. Updates are only installed when ssh-keygen says their list of files
+    //     was signed with Tether's key. That this system's ssh-keygen can
+    //     tell: a line signed with a key made for this test, then the same
+    //     line with one letter changed. (A phone has no ssh-keygen; Android
+    //     itself refuses an update not signed with Tether's key.)
+    {
+        Updater updater({}, "0");
+        updater.setPublicKey("AAAAC3NzaC1lZDI1NTE5AAAAIBPLnWFv/FyV0kiELHv5m1aS0ZRdNOKAnnvVF6IbNIzB");
+        const QByteArray signature =
+            "-----BEGIN SSH SIGNATURE-----\n"
+            "U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgE8udYW/8XJXSSIQse/mbVpLRlF\n"
+            "004oCee9UXohs0jMEAAAANdGV0aGVyLXVwZGF0ZQAAAAAAAAAGc2hhNTEyAAAAUwAAAAtz\n"
+            "c2gtZWQyNTUxOQAAAEARepL0jXcQFPBnqRME/vV3jFGNLtVXQ8GJ5eWNBLF1av7CHRvJ7+\n"
+            "XO4hvFAiO1CGxn1AnVAmdCzZj00HFgBTsH\n"
+            "-----END SSH SIGNATURE-----\n";
+        auto ask = [&](const QByteArray &signedText, QString *said) {
+            QEventLoop loop;
+            auto answer = Updater::Signature::Unavailable;
+            bool answered = false;
+            updater.verify(signedText, signature, [&](Updater::Signature result, const QString &detail) {
+                answer = result;
+                *said = detail;
+                answered = true;
+                loop.quit();
+            });
+            QTimer::singleShot(30000, &loop, &QEventLoop::quit);
+            if (!answered)
+                loop.exec();
+            return answer;
+        };
+        QString said;
+        const auto genuine = ask("tether self-test\n", &said);
+        report(genuine == Updater::Signature::Good, "check an update's signature with ssh-keygen",
+               genuine == Updater::Signature::Unavailable ? "no ssh-keygen that can check signatures: " + said : said);
+        if (genuine == Updater::Signature::Good)
+            report(ask("tether self-tesT\n", &said) == Updater::Signature::Bad, "refuse an update that was changed");
+    }
+#endif
+
     // 3. Optionally a real login with the built-in ssh:
     //    --ssh-test user@host:port <private key file>
 #ifdef TETHER_LIBSSH
