@@ -511,10 +511,12 @@ private slots:
                                               {"sha256", "abc"}, {"url", "0.5.1/tether-0.5.1-1-x86_64.pkg.tar.zst"}}}}};
         QVERIFY(mirror.readRelease(manifest, QUrl("https://tether.example.com/latest.json")));
         QCOMPARE(mirror.latestVersion(), QString("0.5.1"));
-        QCOMPARE(mirror.expectedSha256(), QString("abc"));
-        if (mirror.installKind() == "pacman")
+        // The file and its checksum only exist for systems the asset is for.
+        if (mirror.installKind() == "pacman") {
+            QCOMPARE(mirror.expectedSha256(), QString("abc"));
             QCOMPARE(mirror.sources().value(0).toString(),
                      QString("https://tether.example.com/0.5.1/tether-0.5.1-1-x86_64.pkg.tar.zst"));
+        }
         // GitHub's: the API link first (it works when download links don't), then the download link.
         const QJsonObject github{{"tag_name", "v0.5.1"}, {"body", "Fixes"},
             {"assets", QJsonArray{QJsonObject{{"name", "tether-0.5.1-1-x86_64.pkg.tar.zst"}, {"size", 10},
@@ -522,8 +524,8 @@ private slots:
                                               {"url", "https://api.github.com/repos/o/t/releases/assets/1"},
                                               {"browser_download_url", "https://github.com/o/t/releases/download/v0.5.1/x"}}}}};
         QVERIFY(mirror.readRelease(github, QUrl()));
-        QCOMPARE(mirror.expectedSha256(), QString("def"));
         if (mirror.installKind() == "pacman") {
+            QCOMPARE(mirror.expectedSha256(), QString("def"));
             QCOMPARE(mirror.sources().size(), 2);
             QCOMPARE(mirror.sources().first().host(), QString("api.github.com"));
         }
