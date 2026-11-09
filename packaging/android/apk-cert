@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Prints the SHA-256 of the certificate an APK is signed with (one line per
+signer), read from the APK's own signing block, so no Java is needed:
+
+    packaging/android/apk-cert Tether-0.5.5-android-arm64.apk
+
+Android only installs an update over an app when this is the same as before.
+The release workflow compares it with the release key's before publishing.
+"""
+import hashlib
+import struct
+import sys
+
+V2, V3 = 0x7109871A, 0xF05368C0
+
+
+def signing_block(data):
+    # The end-of-central-directory record says where the central directory
+    # starts; the signing block sits right before it.
+    end = data.rfind(b"PK\x05\x06")
+    if end < 0:
+        sys.exit("not a zip file")
+    directory = struct.unpack_from("<I", data, end + 16)[0]
+    if data[directory - 16:directory] != b"APK Sig Block 42":
+        sys.exit("no APK signing block: the file isn't signed with scheme v2 or v3")
+    size = struct.unpack_from("<Q", data, directory - 24)[0]
+    return data[directory - size:directory - 24]
+
+
+def prefixed(buffer, at):
+    # A length-prefixed piece: its bytes and where the next one starts.
+    size = struct.unpack_from("<I", buffer, at)[0]
+    return buffer[at + 4:at + 4 + size], at + 4 + size
+
+
+def certificates(block):
+    found = {}
+    at = 0
+    while at < len(block):
+        size = struct.unpack_from("<Q", block, at)[0]
+        scheme = struct.unpack_from("<I", block, at + 8)[0]
+        value = block[at + 12:at + 8 + size]
+        at += 8 + size
+        if scheme not in (V2, V3):
+            continue
+        signers, _ = prefixed(value, 0)
+        where = 0
+        while where < len(signers):
+            signer, where = prefixed(signers, where)
+            signed_data, _ = prefixed(signer, 0)
+            _digests, after = prefixed(signed_data, 0)
+            certs, _ = prefixed(signed_data, after)
+            first, _ = prefixed(certs, 0)   # the signer's own certificate
+            found.setdefault(scheme, []).append(hashlib.sha256(first).hexdigest())
+    # Scheme v3 is what Android 9 and later go by when both are there.
+    return found.get(V3) or found.get(V2) or []
+
+
+def main():
+    if len(sys.argv) != 2:
+        sys.exit(__doc__)
+    with open(sys.argv[1], "rb") as apk:
+        sums = certificates(signing_block(apk.read()))
+    if not sums:
+        sys.exit("no signer found in the APK's signing block")
+    print("\n".join(sums))
+
+
+if __name__ == "__main__":
+    main()
