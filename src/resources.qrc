@@ -60,5 +60,8 @@
         <file alias="SyncReview.qml">SyncReview.qml</file>
         <file alias="i18n/en.json">i18n/en.json</file>
         <file alias="i18n/he.json">i18n/he.json</file>
+        <file alias="TFocusRing.qml">TFocusRing.qml</file>
+        <file alias="icons/trash.svg">icons/trash.svg</file>
+        <file alias="icons/split.svg">icons/split.svg</file>
     </qresource>
 </RCC>

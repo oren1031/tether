@@ -16,6 +16,8 @@ TSheet {
     signal deleteSnippetRequested(var snippet)
     signal shortcutsRequested()
     signal updateRequested()
+    // Something that can't be undone: the window asks, then runs action.
+    signal confirmRequested(string heading, string text, string confirmLabel, var action)
 
     property int section: 0
     property string error: ""
@@ -50,6 +52,27 @@ TSheet {
         showingPage = index > 0
         error = ""
         open()
+        // The keyboard starts on the section list: arrows change section,
+        // Tab goes into the page.
+        if (!Style.touch)
+            Qt.callLater(focusSection)
+    }
+
+    function focusSection() {
+        const item = navRepeater.itemAt(section)
+        if (item)
+            item.forceActiveFocus(Qt.TabFocusReason)
+    }
+
+    // The next section up or down that this device lists.
+    function stepSection(by) {
+        for (let i = section + by; i >= 0 && i < sections.length; i += by) {
+            if (Style.touch && sections[i].desktop)
+                continue
+            section = i
+            focusSection()
+            return
+        }
     }
 
     function set(key, value) {
@@ -70,11 +93,14 @@ TSheet {
         Text {
             visible: group.title !== ""
             Layout.leftMargin: 4
+            Layout.rightMargin: 4
             text: group.title
             font.family: Style.fontFamily
             font.pixelSize: Style.fontSize
             font.weight: Font.DemiBold
             color: Style.label
+            Accessible.role: Accessible.Heading
+            Accessible.name: text
         }
         Rectangle {
             Layout.fillWidth: true
@@ -92,8 +118,10 @@ TSheet {
             visible: group.footnote !== ""
             Layout.fillWidth: true
             Layout.leftMargin: 4
+            Layout.rightMargin: 4
             text: group.footnote
             wrapMode: Text.Wrap
+            horizontalAlignment: Text.AlignLeft
             font.family: Style.fontFamily
             font.pixelSize: Style.smallFontSize
             color: Style.tertiaryLabel
@@ -114,9 +142,19 @@ TSheet {
         implicitHeight: stacked ? texts.implicitHeight + slot.childrenRect.height + 30
                                 : Math.max(Style.touch ? 52 : 44, texts.implicitHeight + 20, slot.childrenRect.height + 16)
 
+        // A control with nothing written on it (a switch, a stepper, a
+        // pop-up) is named after its row, for screen readers.
+        Component.onCompleted: {
+            for (const item of slot.children)
+                if (item.label === "")
+                    item.label = Qt.binding(() => settingRow.label)
+        }
+
         ColumnLayout {
             id: texts
-            x: 14
+            // The text at the row's start and the control at its end, which
+            // swap sides in right-to-left languages.
+            x: Style.mirrored ? settingRow.width - width - 14 : 14
             y: settingRow.stacked ? 12 : (settingRow.height - height) / 2
             width: settingRow.stacked ? settingRow.width - 28 : settingRow.width - 14 - slot.width - 28
             spacing: 2
@@ -126,6 +164,7 @@ TSheet {
                 wrapMode: Text.Wrap
                 maximumLineCount: 2
                 elide: Text.ElideRight
+                horizontalAlignment: Text.AlignLeft
                 font.family: Style.fontFamily
                 font.pixelSize: Style.fontSize
                 color: Style.label
@@ -135,8 +174,9 @@ TSheet {
                 Layout.fillWidth: true
                 text: settingRow.note
                 wrapMode: Text.Wrap
-                maximumLineCount: settingRow.stacked ? 4 : 2
+                maximumLineCount: settingRow.stacked ? 4 : 3
                 elide: Text.ElideRight
+                horizontalAlignment: Text.AlignLeft
                 font.family: Style.fontFamily
                 font.pixelSize: Style.smallFontSize
                 color: Style.secondaryLabel
@@ -144,7 +184,8 @@ TSheet {
         }
         Item {
             id: slot
-            x: settingRow.stacked ? 14 : settingRow.width - width - 12
+            readonly property bool atStart: settingRow.stacked !== Style.mirrored
+            x: atStart ? (settingRow.stacked ? 14 : 12) : settingRow.width - width - (settingRow.stacked ? 14 : 12)
             y: settingRow.stacked ? texts.y + texts.height + 10 : (settingRow.height - height) / 2
             width: childrenRect.width
             height: childrenRect.height
@@ -167,7 +208,7 @@ TSheet {
         default property alias content: column.data
         clip: true
         contentWidth: availableWidth
-        ScrollBar.vertical: TScrollBar { parent: page; x: page.width - width; height: page.height }
+        ScrollBar.vertical: TScrollBar { parent: page; x: page.mirrored ? 0 : page.width - width; height: page.height }
 
         ColumnLayout {
             id: column
@@ -181,6 +222,8 @@ TSheet {
                 font.pixelSize: Style.fontSize + 9
                 font.weight: Font.Bold
                 color: Style.label
+                Accessible.role: Accessible.Heading
+                Accessible.name: text
             }
         }
     }
@@ -234,37 +277,61 @@ TSheet {
                 }
 
                 Repeater {
+                    id: navRepeater
                     model: dialog.sections
                     delegate: ItemDelegate {
                         id: nav
+                        objectName: "section" + index
                         required property int index
                         required property var modelData
+                        // On a desktop the open section is marked; a phone
+                        // shows the list alone, with nothing open yet.
+                        readonly property bool chosen: dialog.section === index && !Style.compact
                         visible: !(Style.touch && modelData.desktop)
                         Layout.fillWidth: true
-                        topPadding: 5
-                        bottomPadding: 5
+                        topPadding: Style.touch ? 10 : 5
+                        bottomPadding: Style.touch ? 10 : 5
                         leftPadding: 6
                         rightPadding: 6
                         hoverEnabled: true
+                        // Tab stops on the open section; Up and Down move
+                        // through the rest.
+                        focusPolicy: Qt.StrongFocus
+                        activeFocusOnTab: dialog.section === index || activeFocus
+                        Keys.onUpPressed: dialog.stepSection(-1)
+                        Keys.onDownPressed: dialog.stepSection(1)
+                        Accessible.role: Accessible.PageTab
+                        Accessible.name: modelData.name
+                        Accessible.selected: chosen
                         onClicked: {
                             dialog.section = index
                             dialog.showingPage = true
                         }
                         background: Rectangle {
                             radius: 7
-                            color: dialog.section === nav.index ? Style.accent
+                            color: nav.chosen ? Style.accent
                                  : nav.hovered ? Qt.rgba(1, 1, 1, 0.05) : "transparent"
+                            TFocusRing { visible: nav.visualFocus }
                         }
                         contentItem: RowLayout {
                             spacing: 10
                             Badge { icon: nav.modelData.icon; tone: nav.modelData.color }
                             Text {
+                                objectName: "sectionName"
                                 Layout.fillWidth: true
                                 text: nav.modelData.name
+                                horizontalAlignment: Text.AlignLeft
                                 font.family: Style.fontFamily
                                 font.pixelSize: Style.fontSize
                                 font.weight: Font.Medium
-                                color: dialog.section === nav.index ? Style.onAccent : Style.label
+                                color: nav.chosen ? Style.accentText : Style.label
+                            }
+                            Icon {
+                                visible: Style.compact
+                                name: "chevron-right"
+                                size: 12
+                                opacity: 0.5
+                                mirror: Style.mirrored
                             }
                         }
                     }
@@ -276,11 +343,15 @@ TSheet {
                     visible: dialog.error !== ""
                     Layout.fillWidth: true
                     Layout.leftMargin: 6
+                    Layout.rightMargin: 6
                     wrapMode: Text.Wrap
+                    horizontalAlignment: Text.AlignLeft
                     font.family: Style.fontFamily
                     font.pixelSize: Style.smallFontSize
-                    color: Style.red
+                    color: Style.errorText
                     text: dialog.error
+                    Accessible.role: Accessible.AlertMessage
+                    Accessible.name: text
                 }
                 TButton {
                     Layout.fillWidth: true
@@ -322,6 +393,21 @@ TSheet {
                     onClicked: dialog.close()
                 }
             }
+            // On a phone the section list, and the error under it, is out
+            // of sight while a page is open.
+            Text {
+                visible: Style.compact && dialog.error !== ""
+                Layout.fillWidth: true
+                Layout.leftMargin: 16
+                Layout.rightMargin: 16
+                Layout.bottomMargin: 6
+                wrapMode: Text.Wrap
+                horizontalAlignment: Text.AlignLeft
+                font.family: Style.fontFamily
+                font.pixelSize: Style.smallFontSize
+                color: Style.errorText
+                text: dialog.error
+            }
 
         StackLayout {
             Layout.fillWidth: true
@@ -339,6 +425,7 @@ TSheet {
                         TField {
                             id: shellField
                             width: 220
+                            label: qsTr("Local shell")
                             text: backend.settings.shell
                             placeholderText: Qt.platform.os === "linux" ? "/usr/bin/bash" : ""
                             onEditingFinished: if (text !== backend.settings.shell) dialog.set("shell", text)
@@ -392,6 +479,7 @@ TSheet {
                                              : qsTr("Your own server with Tether's releases (see bin/mirror-release), checked before GitHub. Blank uses GitHub alone.")
                         TField {
                             width: 240
+                            label: qsTr("Update server")
                             text: backend.settings.updateMirror
                             placeholderText: "https://tether.example.com"
                             inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase
@@ -426,11 +514,14 @@ TSheet {
                         note: qsTr("Saved hosts and snippets are kept.")
                         last: true
                         TButton {
-                            text: qsTr("Restore")
-                            onClicked: {
-                                dialog.error = backend.resetSettings()
-                                backend.fontSize = 13
-                            }
+                            objectName: "restoreDefaults"
+                            text: qsTr("Restore…")
+                            onClicked: dialog.confirmRequested(qsTr("Restore default settings?"),
+                                qsTr("Colors, fonts, and every other setting go back to how Tether came. Saved hosts, snippets, and logins are kept."),
+                                qsTr("Restore"), () => {
+                                    dialog.error = backend.resetSettings()
+                                    backend.fontSize = 13
+                                })
                         }
                     }
                 }
@@ -454,14 +545,36 @@ TSheet {
                             anchors.verticalCenter: parent.verticalCenter
                             spacing: 4
                             Repeater {
+                                id: accentRepeater
                                 model: Style.accents
                                 delegate: Column {
                                     id: swatch
+                                    objectName: "accent-" + modelData.key
+                                    required property int index
                                     required property var modelData
                                     readonly property bool chosen: backend.settings.accent === modelData.key
                                     readonly property color tone: modelData.key === "omarchy" ? theme.accent : modelData.color
                                     spacing: 6
-                                    width: 52
+                                    // Room for "Graphite" in a phone's bigger text.
+                                    width: Style.touch ? 64 : 52
+                                    topPadding: 6
+                                    // Tab stops on the chosen color; the arrow
+                                    // keys move the choice, like radio buttons.
+                                    activeFocusOnTab: chosen || activeFocus
+                                    function move(by) {
+                                        const n = Style.accents.length
+                                        const next = (index + by + n) % n
+                                        dialog.set("accent", Style.accents[next].key)
+                                        accentRepeater.itemAt(next).forceActiveFocus(Qt.TabFocusReason)
+                                    }
+                                    Keys.onLeftPressed: move(Style.mirrored ? 1 : -1)
+                                    Keys.onRightPressed: move(Style.mirrored ? -1 : 1)
+                                    Keys.onSpacePressed: dialog.set("accent", modelData.key)
+                                    Accessible.role: Accessible.RadioButton
+                                    Accessible.name: modelData.name
+                                    Accessible.checkable: true
+                                    Accessible.checked: chosen
+                                    Accessible.onPressAction: dialog.set("accent", modelData.key)
                                     Rectangle {
                                         anchors.horizontalCenter: parent.horizontalCenter
                                         width: 26
@@ -470,6 +583,7 @@ TSheet {
                                         color: swatch.tone
                                         border.width: swatch.modelData.key === "omarchy" ? 2 : 0
                                         border.color: Qt.rgba(1, 1, 1, 0.5)
+                                        TFocusRing { gap: 7; visible: swatch.activeFocus }
                                         Rectangle {
                                             anchors.centerIn: parent
                                             width: 34
@@ -485,12 +599,12 @@ TSheet {
                                             width: 8
                                             height: 8
                                             radius: 4
-                                            color: "white"
+                                            color: Style.textOn(swatch.tone)
                                             visible: swatch.chosen
                                         }
                                         MouseArea {
                                             anchors.fill: parent
-                                            anchors.margins: -4
+                                            anchors.margins: Style.touch ? -9 : -4
                                             cursorShape: Qt.PointingHandCursor
                                             onClicked: dialog.set("accent", swatch.modelData.key)
                                         }
@@ -499,10 +613,10 @@ TSheet {
                                         width: parent.width
                                         horizontalAlignment: Text.AlignHCenter
                                         text: swatch.modelData.name
-                                        wrapMode: Text.Wrap
+                                        wrapMode: Text.WordWrap
                                         font.family: Style.fontFamily
                                         font.pixelSize: Style.smallFontSize
-                                        color: swatch.chosen ? Style.label : Style.tertiaryLabel
+                                        color: swatch.chosen ? Style.label : Style.secondaryLabel
                                     }
                                 }
                             }
@@ -595,10 +709,27 @@ TSheet {
                             anchors.verticalCenter: parent.verticalCenter
                             spacing: 12
                             Repeater {
+                                id: schemeRepeater
                                 model: (theme.hasOmarchy ? ["omarchy"] : []).concat(theme.builtinSchemes())
                                 delegate: Column {
                                     id: card
+                                    required property int index
                                     required property string modelData
+                                    activeFocusOnTab: chosen || activeFocus
+                                    function move(by) {
+                                        const n = schemeRepeater.count
+                                        const next = (index + by + n) % n
+                                        dialog.set("terminalScheme", schemeRepeater.model[next])
+                                        schemeRepeater.itemAt(next).forceActiveFocus(Qt.TabFocusReason)
+                                    }
+                                    Keys.onLeftPressed: move(Style.mirrored ? 1 : -1)
+                                    Keys.onRightPressed: move(Style.mirrored ? -1 : 1)
+                                    Keys.onSpacePressed: dialog.set("terminalScheme", modelData)
+                                    Accessible.role: Accessible.RadioButton
+                                    Accessible.name: modelData === "omarchy" ? qsTr("Omarchy theme") : modelData
+                                    Accessible.checkable: true
+                                    Accessible.checked: chosen
+                                    Accessible.onPressAction: dialog.set("terminalScheme", modelData)
                                     readonly property bool chosen: backend.settings.terminalScheme === modelData
                                         || (!theme.hasOmarchy && backend.settings.terminalScheme === "omarchy" && modelData === "Tether Dark")
                                     readonly property var colors: { theme.revision; return theme.schemeColors(modelData) }
@@ -611,6 +742,7 @@ TSheet {
                                         color: card.colors.background || "black"
                                         border.width: card.chosen ? 2 : 1
                                         border.color: card.chosen ? Style.accent : Qt.rgba(1, 1, 1, 0.12)
+                                        TFocusRing { visible: card.activeFocus }
                                         Text {
                                             x: 9
                                             y: 8
@@ -752,10 +884,9 @@ TSheet {
                                 TButton { text: qsTr("Edit…"); onClicked: dialog.editProfileRequested(hostRow.modelData) }
                                 TButton {
                                     kind: "toolbar"
-                                    iconName: "close"
-                                    iconSize: 12
-                                    ToolTip.visible: hovered
-                                    ToolTip.text: qsTr("Delete")
+                                    iconName: "trash"
+                                    iconSize: 15
+                                    label: qsTr("Delete %1").arg(hostRow.modelData.name)
                                     onClicked: dialog.deleteProfileRequested(hostRow.modelData)
                                 }
                             }
@@ -797,10 +928,9 @@ TSheet {
                                 TButton { text: qsTr("Edit…"); onClicked: dialog.editSnippetRequested(snippetRow.modelData) }
                                 TButton {
                                     kind: "toolbar"
-                                    iconName: "close"
-                                    iconSize: 12
-                                    ToolTip.visible: hovered
-                                    ToolTip.text: qsTr("Delete")
+                                    iconName: "trash"
+                                    iconSize: 15
+                                    label: qsTr("Delete %1").arg(snippetRow.modelData.name)
                                     onClicked: dialog.deleteSnippetRequested(snippetRow.modelData)
                                 }
                             }
@@ -860,11 +990,16 @@ TSheet {
                                 TButton { text: qsTr("Edit…"); onClicked: loginSheet.edit(loginRow.modelData) }
                                 TButton {
                                     kind: "toolbar"
-                                    iconName: "close"
-                                    iconSize: 12
-                                    ToolTip.visible: hovered
-                                    ToolTip.text: qsTr("Delete")
-                                    onClicked: dialog.error = backend.removeIdentity(loginRow.modelData.id)
+                                    iconName: "trash"
+                                    iconSize: 15
+                                    label: qsTr("Delete %1").arg(loginRow.modelData.name)
+                                    onClicked: {
+                                        const login = loginRow.modelData
+                                        dialog.confirmRequested(qsTr("Delete %1?").arg(login.name),
+                                            login.hasPassword ? qsTr("Its password is removed from the keyring, and hosts that use this login go back to asking.")
+                                                              : qsTr("Hosts that use this login go back to asking how to sign in."),
+                                            qsTr("Delete"), () => dialog.error = backend.removeIdentity(login.id))
+                                    }
                                 }
                             }
                         }
@@ -894,7 +1029,7 @@ TSheet {
                         label: qsTr("Run local shells in tmux")
                         note: backend.tmuxAvailable
                               ? qsTr("They keep running when Tether closes; reopen them from Detached sessions in the sidebar.")
-                              : qsTr("Install tmux to use this: sudo pacman -S tmux")
+                              : qsTr("Install the tmux package to use this.")
                         TSwitch {
                             enabled: backend.tmuxAvailable
                             checked: backend.settings.localTmux
@@ -1016,6 +1151,7 @@ TSheet {
                                 id: keyField
                                 visible: assistant.keySource !== "environment"
                                 width: 200
+                                label: qsTr("Anthropic API key")
                                 Layout.preferredWidth: 200
                                 echoMode: TextInput.Password
                                 placeholderText: assistant.keySource === "saved" ? "••••••••" : "sk-ant-…"
@@ -1034,8 +1170,10 @@ TSheet {
                             }
                             TButton {
                                 visible: assistant.keySource === "saved"
-                                text: qsTr("Remove")
-                                onClicked: dialog.error = assistant.saveKey("")
+                                text: qsTr("Remove…")
+                                onClicked: dialog.confirmRequested(qsTr("Remove the API key?"),
+                                    qsTr("Asking for commands with it stops working until you save a key again."),
+                                    qsTr("Remove"), () => dialog.error = assistant.saveKey(""))
                             }
                         }
                     }
@@ -1099,19 +1237,20 @@ TSheet {
             rowSpacing: 10
             component L: Text {
                 Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+                horizontalAlignment: Text.AlignRight
                 font.family: Style.fontFamily
                 font.pixelSize: Style.fontSize
                 color: Style.secondaryLabel
             }
             L { text: qsTr("Name") }
-            TField { id: loginName; Layout.fillWidth: true; placeholderText: qsTr("Work servers"); onAccepted: loginSheet.save() }
+            TField { id: loginName; Layout.fillWidth: true; label: qsTr("Name"); placeholderText: qsTr("Work servers"); onAccepted: loginSheet.save() }
             L { text: qsTr("User") }
-            TField { id: loginUser; Layout.fillWidth: true; placeholderText: qsTr("deploy"); onAccepted: loginSheet.save() }
+            TField { id: loginUser; Layout.fillWidth: true; label: qsTr("User"); placeholderText: qsTr("deploy"); onAccepted: loginSheet.save() }
             L { text: qsTr("Key file") }
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 6
-                TField { id: loginKey; Layout.fillWidth: true; placeholderText: qsTr("~/.ssh/id_ed25519 (optional)"); onAccepted: loginSheet.save() }
+                TField { id: loginKey; Layout.fillWidth: true; label: qsTr("Key file"); placeholderText: qsTr("~/.ssh/id_ed25519 (optional)"); onAccepted: loginSheet.save() }
                 TButton { text: qsTr("Choose…"); onClicked: loginKeyPicker.open() }
             }
             FileDialog {
@@ -1119,9 +1258,8 @@ TSheet {
                 title: qsTr("Choose a private key")
                 onAccepted: {
                     const result = backend.importKey(selectedFile)
-                    if (result.error)
-                        loginSheet.sheetError = result.error
-                    else
+                    loginSheet.sheetError = result.error || ""
+                    if (!result.error)
                         loginKey.text = result.path
                 }
             }
@@ -1129,6 +1267,7 @@ TSheet {
             TField {
                 id: loginPassword
                 Layout.fillWidth: true
+                label: qsTr("Password")
                 enabled: backend.keyringAvailable && !forget.checked
                 echoMode: TextInput.Password
                 placeholderText: loginSheet.login && loginSheet.login.hasPassword ? qsTr("Saved; type to replace")
@@ -1146,9 +1285,10 @@ TSheet {
                 Layout.fillWidth: true
                 visible: loginSheet.sheetError !== ""
                 wrapMode: Text.Wrap
+                horizontalAlignment: Text.AlignLeft
                 font.family: Style.fontFamily
                 font.pixelSize: Style.fontSize
-                color: Style.red
+                color: Style.errorText
                 text: loginSheet.sheetError
             }
         }

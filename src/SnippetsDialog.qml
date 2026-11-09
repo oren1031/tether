@@ -12,6 +12,8 @@ TSheet {
     property string editingId: ""
     property bool editing: false
     property string error: ""
+    // Something that can't be undone: the window asks, then runs action.
+    signal confirmRequested(string heading, string text, string confirmLabel, var action)
 
     large: true
     width: preferredWidth(620)
@@ -141,6 +143,7 @@ TSheet {
                 id: filter
                 Layout.fillWidth: true
                 iconName: "search"
+                label: qsTr("Search snippets")
                 placeholderText: qsTr("Search snippets")
                 onTextChanged: dialog.rebuild()
                 Keys.onDownPressed: list.incrementCurrentIndex()
@@ -164,8 +167,11 @@ TSheet {
                     spacing: 1
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: TScrollBar {}
+                    Accessible.role: Accessible.List
+                    Accessible.name: qsTr("Snippets")
                     delegate: ItemDelegate {
                         id: row
+                        Accessible.name: name
                         required property int index
                         required property string name
                         required property string body
@@ -188,18 +194,20 @@ TSheet {
                                 Layout.fillWidth: true
                                 text: row.name
                                 elide: Text.ElideRight
+                                horizontalAlignment: Text.AlignLeft
                                 font.family: Style.fontFamily
                                 font.pixelSize: Style.fontSize
                                 font.weight: Font.Medium
-                                color: row.ListView.isCurrentItem ? Style.onAccent : Style.label
+                                color: row.ListView.isCurrentItem ? Style.accentText : Style.label
                             }
                             Text {
                                 Layout.fillWidth: true
                                 text: row.body.replace(/\n/g, " ⏎ ")
                                 elide: Text.ElideRight
+                                horizontalAlignment: Text.AlignLeft
                                 font.family: Style.monoFamily
                                 font.pixelSize: Style.smallFontSize
-                                color: row.ListView.isCurrentItem ? Style.onAccentSecondary : Style.secondaryLabel
+                                color: row.ListView.isCurrentItem ? Style.accentTextSecondary : Style.secondaryLabel
                             }
                         }
                     }
@@ -230,13 +238,17 @@ TSheet {
                 rowSpacing: 8
                 RowLayout {
                     spacing: 2
-                    TButton { kind: "toolbar"; iconName: "plus"; ToolTip.visible: hovered; ToolTip.text: qsTr("New"); onClicked: dialog.edit(null) }
+                    TButton { kind: "toolbar"; iconName: "plus"; label: qsTr("New snippet"); onClicked: dialog.edit(null) }
                     TButton { kind: "plain"; text: qsTr("Edit"); enabled: list.currentIndex >= 0; onClicked: dialog.edit(dialog.current()) }
                     TButton {
                         kind: "plain"
-                        text: qsTr("Delete")
+                        text: qsTr("Delete…")
                         enabled: list.currentIndex >= 0
-                        onClicked: dialog.error = backend.removeSnippet(dialog.current().id)
+                        onClicked: {
+                            const snippet = dialog.current()
+                            dialog.confirmRequested(qsTr("Delete %1?").arg(snippet.name), qsTr("This snippet will be gone for good."),
+                                                    qsTr("Delete"), () => dialog.error = backend.removeSnippet(snippet.id))
+                        }
                     }
                     Item { Layout.fillWidth: true }
                 }
@@ -266,6 +278,7 @@ TSheet {
             TField {
                 id: name
                 Layout.fillWidth: true
+                label: qsTr("Name")
                 placeholderText: qsTr("Name")
             }
             ScrollView {
@@ -273,6 +286,7 @@ TSheet {
                 Layout.fillHeight: true
                 TTextArea {
                     id: body
+                    label: qsTr("Text to send")
                     placeholderText: qsTr("Text to send. Each new line presses Enter.\n{{name}} asks for a value when sent; {{host}}, {{user}}, {{date}}, and {{time}} fill themselves in.")
                     wrapMode: TextEdit.NoWrap
                 }
@@ -285,9 +299,10 @@ TSheet {
                 visible: dialog.error !== ""
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
+                horizontalAlignment: Text.AlignLeft
                 font.family: Style.fontFamily
                 font.pixelSize: Style.fontSize
-                color: Style.red
+                color: Style.errorText
                 text: dialog.error
             }
             RowLayout {

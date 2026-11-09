@@ -55,6 +55,7 @@ TSheet {
                 TField {
                     id: input
                     Layout.fillWidth: true
+                    label: modelData.label || modelData.key || sheet.title
                     text: modelData.text || ""
                     onAccepted: {
                         if (index + 1 < repeater.count)

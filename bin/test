@@ -10,3 +10,12 @@ cd "$ROOT/build/tests"
 "${QMAKE:-qmake6}" "$ROOT/tests/tether_tests.pro" ${QMAKE_ARGS:-}
 make -j"$(nproc)"
 QT_QPA_PLATFORM=offscreen ./tether_tests
+
+# The interface itself, driven like a person would: once as a desktop with a
+# mouse and keyboard, once as a touch screen.
+mkdir -p "$ROOT/build/tests-ui"
+cd "$ROOT/build/tests-ui"
+"${QMAKE:-qmake6}" "$ROOT/tests/ui/tether_ui_tests.pro"
+make -j"$(nproc)"
+QT_QPA_PLATFORM=offscreen ./tether_ui_tests
+TETHER_TOUCH=1 QT_QPA_PLATFORM=offscreen ./tether_ui_tests

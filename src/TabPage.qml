@@ -42,11 +42,21 @@ Item {
         SplitView {
             property var container: null
             readonly property bool isPane: false
-            // A hairline that turns blue while it's dragged.
+            // A hairline that turns blue while it's dragged. A finger gets
+            // 44 across to take hold of it by.
             handle: Rectangle {
+                id: divider
                 implicitWidth: page.handleSize
                 implicitHeight: page.handleSize
                 color: Style.window
+                containmentMask: Item {
+                    readonly property int reach: Style.touch ? 44 : page.handleSize
+                    readonly property bool upright: divider.height > divider.width
+                    x: upright ? (divider.width - width) / 2 : 0
+                    y: upright ? 0 : (divider.height - height) / 2
+                    width: upright ? reach : divider.width
+                    height: upright ? divider.height : reach
+                }
                 Rectangle {
                     anchors.centerIn: parent
                     width: parent.width > parent.height ? parent.width : (SplitHandle.pressed || SplitHandle.hovered ? 3 : 1)
@@ -206,6 +216,15 @@ Item {
         activePane = remaining.length ? remaining[0] : null
         if (activePane)
             Qt.callLater(activePane.focusTerminal)
+    }
+
+    // Terminals in this tab whose session hasn't ended.
+    function liveCount() {
+        let n = 0
+        for (const pane of panes())
+            if (pane.terminal && !pane.ended)
+                ++n
+        return n
     }
 
     function closeAll() {

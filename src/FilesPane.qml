@@ -83,7 +83,7 @@ FocusScope {
         // Toolbar: up, the path as a breadcrumb, and actions.
         Rectangle {
             Layout.fillWidth: true
-            implicitHeight: 40
+            implicitHeight: Style.touch ? 48 : 40
             color: Style.toolbar
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Style.separator }
 
@@ -97,9 +97,7 @@ FocusScope {
                     kind: "toolbar"
                     iconName: "arrow-up"
                     enabled: browser.path !== "/" && browser.path !== "" && !browser.busy
-                    ToolTip.visible: hovered
-                    ToolTip.delay: 600
-                    ToolTip.text: qsTr("Enclosing folder")
+                    label: qsTr("Enclosing folder")
                     onClicked: browser.up()
                 }
 
@@ -135,13 +133,23 @@ FocusScope {
                                     anchors.verticalCenter: parent.verticalCenter
                                     name: "chevron-right"
                                     size: 11
-                                    opacity: 0.35
+                                    opacity: 0.5
+                                    mirror: Style.mirrored
                                 }
                                 Rectangle {
-                                    width: crumbText.implicitWidth + 12
-                                    height: 24
+                                    id: crumb
+                                    width: Math.max(Style.touch ? 44 : 0, crumbText.implicitWidth + 12)
+                                    height: Style.touch ? 40 : 24
                                     radius: 5
                                     color: crumbArea.containsMouse ? Style.fill : "transparent"
+                                    activeFocusOnTab: true
+                                    Keys.onReturnPressed: browser.go(modelData.path)
+                                    Keys.onEnterPressed: browser.go(modelData.path)
+                                    Keys.onSpacePressed: browser.go(modelData.path)
+                                    Accessible.role: Accessible.Button
+                                    Accessible.name: modelData.path === "/" ? qsTr("Top folder") : modelData.name
+                                    Accessible.onPressAction: browser.go(modelData.path)
+                                    TFocusRing { gap: 1; visible: crumb.activeFocus }
                                     Text {
                                         id: crumbText
                                         anchors.centerIn: parent
@@ -167,18 +175,14 @@ FocusScope {
                     kind: "toolbar"
                     iconName: "upload"
                     enabled: !browser.busy && browser.path !== ""
-                    ToolTip.visible: hovered
-                    ToolTip.delay: 600
-                    ToolTip.text: qsTr("Upload files here")
+                    label: qsTr("Upload files here")
                     onClicked: picker.open()
                 }
                 TButton {
                     kind: "toolbar"
                     iconName: "folder-plus"
                     enabled: !browser.busy && browser.path !== ""
-                    ToolTip.visible: hovered
-                    ToolTip.delay: 600
-                    ToolTip.text: qsTr("New folder")
+                    label: qsTr("New folder")
                     onClicked: prompt.ask(qsTr("New folder"), qsTr("In %1").arg(browser.path),
                                           [{ key: "name", label: "", text: qsTr("untitled folder") }],
                                           qsTr("Create"), v => browser.makeFolder(v.name))
@@ -186,9 +190,7 @@ FocusScope {
                 TButton {
                     kind: "toolbar"
                     iconName: browser.busy ? "close" : "reload"
-                    ToolTip.visible: hovered
-                    ToolTip.delay: 600
-                    ToolTip.text: browser.busy ? qsTr("Stop") : qsTr("Refresh")
+                    label: browser.busy ? qsTr("Stop") : qsTr("Refresh")
                     onClicked: browser.busy ? browser.cancel() : browser.refresh()
                 }
             }
@@ -203,6 +205,7 @@ FocusScope {
             Layout.bottomMargin: 4
             spacing: 12
             component Heading: Text {
+                horizontalAlignment: Text.AlignLeft
                 font.family: Style.fontFamily
                 font.pixelSize: Style.smallFontSize
                 font.weight: Font.DemiBold
@@ -225,6 +228,8 @@ FocusScope {
             highlightMoveDuration: 0
             focus: true
             ScrollBar.vertical: TScrollBar {}
+            Accessible.role: Accessible.List
+            Accessible.name: qsTr("Files in %1").arg(browser.path)
 
             delegate: ItemDelegate {
                 id: row
@@ -233,7 +238,7 @@ FocusScope {
                 readonly property bool current: ListView.isCurrentItem
                 readonly property bool strong: current && list.activeFocus
                 width: ListView.view.width - 16
-                height: 30
+                height: Style.touch ? 44 : 30
                 leftPadding: 10
                 rightPadding: 10
                 hoverEnabled: true
@@ -242,8 +247,25 @@ FocusScope {
                     color: row.strong ? Style.accent : row.current ? Style.selection
                          : row.index % 2 ? Qt.rgba(1, 1, 1, 0.02) : "transparent"
                 }
-                onClicked: { list.currentIndex = index; list.forceActiveFocus(); if (pane.page) pane.page.activePane = pane }
-                onDoubleClicked: pane.activate(modelData)
+                // A finger taps once to open or download and holds for the
+                // menu; a mouse selects, double-clicks, and right-clicks.
+                onClicked: {
+                    list.currentIndex = index
+                    list.forceActiveFocus()
+                    if (pane.page)
+                        pane.page.activePane = pane
+                    if (Style.touch)
+                        pane.activate(modelData)
+                }
+                onDoubleClicked: if (!Style.touch) pane.activate(modelData)
+                onPressAndHold: {
+                    if (!Style.touch)
+                        return
+                    list.currentIndex = index
+                    fileMenu.popup(row, Math.min(row.width - 60, 48), row.height - 6)
+                }
+                Accessible.name: modelData.folder ? qsTr("%1, folder").arg(modelData.name)
+                                                  : modelData.name + ", " + pane.size(modelData.size)
                 TapHandler {
                     acceptedButtons: Qt.RightButton
                     onTapped: { list.currentIndex = row.index; fileMenu.popup() }
@@ -257,6 +279,7 @@ FocusScope {
                             anchors.verticalCenter: parent.verticalCenter
                             name: row.modelData.folder ? "folder" : row.modelData.link ? "link" : "file"
                             size: 15
+                            color: row.strong ? Style.accentText : "white"
                             opacity: row.modelData.folder ? 0.9 : 0.6
                         }
                         Text {
@@ -264,9 +287,10 @@ FocusScope {
                             width: parent.width - 23
                             text: row.modelData.name
                             elide: Text.ElideMiddle
+                            horizontalAlignment: Text.AlignLeft
                             font.family: Style.fontFamily
                             font.pixelSize: Style.fontSize
-                            color: row.strong ? Style.onAccent : Style.label
+                            color: row.strong ? Style.accentText : Style.label
                         }
                     }
                     Text {
@@ -276,7 +300,7 @@ FocusScope {
                         font.family: Style.fontFamily
                         font.pixelSize: Style.smallFontSize
                         font.features: { "tnum": 1 }
-                        color: row.strong ? Style.onAccentSecondary : Style.secondaryLabel
+                        color: row.strong ? Style.accentTextSecondary : Style.secondaryLabel
                     }
                     Text {
                         visible: pane.width > 460
@@ -284,7 +308,7 @@ FocusScope {
                         text: row.modelData.modified
                         font.family: Style.fontFamily
                         font.pixelSize: Style.smallFontSize
-                        color: row.strong ? Style.onAccentSecondary : Style.secondaryLabel
+                        color: row.strong ? Style.accentTextSecondary : Style.secondaryLabel
                     }
                 }
             }
@@ -313,7 +337,7 @@ FocusScope {
                 wrapMode: Text.Wrap
                 font.family: Style.fontFamily
                 font.pixelSize: Style.fontSize
-                color: browser.error ? Style.red : Style.secondaryLabel
+                color: browser.error ? Style.errorText : Style.secondaryLabel
                 text: browser.error ? browser.error
                     : browser.busy ? browser.status
                     : qsTr("This folder is empty. Drop files here to upload them.")
@@ -349,7 +373,7 @@ FocusScope {
                     elide: Text.ElideRight
                     font.family: Style.fontFamily
                     font.pixelSize: Style.smallFontSize
-                    color: browser.error && browser.entries.length ? Style.red : Style.secondaryLabel
+                    color: browser.error && browser.entries.length ? Style.errorText : Style.secondaryLabel
                     text: browser.busy ? browser.status
                         : browser.error && browser.entries.length ? browser.error
                         : qsTr("%n items", "", browser.entries.length) + "  ·  " + qsTr("Downloads go to %1").arg(browser.downloadFolder)

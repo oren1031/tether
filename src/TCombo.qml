@@ -6,28 +6,35 @@ import Tether
 // A macOS pop-up button, editable or not, with a menu-like list.
 ComboBox {
     id: control
+    property string label: ""
     implicitHeight: Style.controlHeight + 2
-    leftPadding: 10
-    rightPadding: 30
+    leftPadding: mirrored ? 30 : 10
+    rightPadding: mirrored ? 10 : 30
     font.family: Style.fontFamily
     font.pixelSize: Style.fontSize
     hoverEnabled: true
+    opacity: enabled ? 1 : 0.4
+
+    Accessible.name: label
+    Accessible.description: displayText
 
     delegate: ItemDelegate {
         id: item
         required property int index
         required property var modelData
         width: ListView.view.width
-        height: 26
-        leftPadding: 26
+        height: Style.rowHeight
+        leftPadding: mirrored ? 8 : 26
+        rightPadding: mirrored ? 26 : 8
         hoverEnabled: true
         highlighted: control.highlightedIndex === index
         contentItem: Text {
             text: control.textRole ? (Array.isArray(control.model) ? item.modelData[control.textRole]
                                                                    : item.modelData) : item.modelData
             font: control.font
-            color: item.highlighted ? Style.onAccent : Style.label
+            color: item.highlighted ? Style.accentText : Style.label
             elide: Text.ElideRight
+            horizontalAlignment: Text.AlignLeft
             verticalAlignment: Text.AlignVCenter
         }
         background: Rectangle {
@@ -37,6 +44,7 @@ ComboBox {
                 visible: control.currentIndex === item.index
                 name: "check"
                 size: 12
+                color: item.highlighted ? Style.accentText : "white"
                 anchors.left: parent.left
                 anchors.leftMargin: 8
                 anchors.verticalCenter: parent.verticalCenter
@@ -45,7 +53,7 @@ ComboBox {
     }
 
     indicator: Rectangle {
-        x: control.width - width - 4
+        x: control.mirrored ? 4 : control.width - width - 4
         anchors.verticalCenter: parent.verticalCenter
         width: 22
         height: 22
@@ -55,6 +63,7 @@ ComboBox {
             anchors.centerIn: parent
             name: "chevron-down"
             size: 13
+            color: control.editable ? "white" : Style.accentText
             opacity: 0.95
         }
     }
@@ -73,30 +82,25 @@ ComboBox {
         color: Style.label
         selectionColor: Style.tint(0.45)
         selectedTextColor: "white"
+        horizontalAlignment: Text.AlignLeft
         verticalAlignment: Text.AlignVCenter
+        // The pop-up button carries the name; this is its text.
+        Accessible.ignored: !control.editable
+        Accessible.name: control.label
     }
 
     background: Rectangle {
         radius: 7
         color: control.editable ? Style.fieldFill : control.down ? Style.fillPressed : control.hovered ? Style.fillHover : Style.fill
         border.width: 1
-        border.color: control.activeFocus && control.editable ? Style.tint(0.9) : Style.fieldBorder
-        Rectangle {
-            anchors.fill: parent
-            anchors.margins: -3
-            radius: parent.radius + 3
-            color: "transparent"
-            border.width: 3
-            border.color: Style.focusRing
-            visible: control.activeFocus && (control.editable || control.visualFocus)
-            opacity: 0.6
-        }
+        border.color: control.activeFocus && control.editable ? Style.focusRing : Style.fieldBorder
+        TFocusRing { visible: control.activeFocus && (control.editable || control.visualFocus) }
     }
 
     popup: Popup {
         y: control.height + 4
         width: control.width
-        implicitHeight: Math.min(contentItem.implicitHeight + 10, 300)
+        implicitHeight: Math.min(contentItem.implicitHeight + 10, Style.touch ? 360 : 300)
         padding: 5
         topMargin: Style.safeTop
         bottomMargin: Style.safeBottom

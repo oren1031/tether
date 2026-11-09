@@ -135,6 +135,8 @@ FocusScope {
 
         sourceComponent: TerminalView {
             id: term
+            Accessible.role: Accessible.Terminal
+            Accessible.name: qsTr("Terminal")
             font.family: Style.terminalFamily
             font.pixelSize: backend.fontSize
             colors: Style.terminalColors
@@ -165,7 +167,9 @@ FocusScope {
                 anchors.right: parent.right
                 width: scrollArea.containsMouse || scrollArea.pressed ? 8 : 5
                 radius: width / 2
-                color: Qt.rgba(1, 1, 1, scrollArea.pressed ? 0.45 : 0.28)
+                // In the terminal's text color, so it shows on a light scheme too.
+                color: Qt.rgba(Style.terminalForeground.r, Style.terminalForeground.g, Style.terminalForeground.b,
+                               scrollArea.pressed ? 0.6 : 0.45)
                 opacity: term.scrollOffset > 0 || scrollArea.containsMouse || scrollArea.pressed ? 1 : 0
                 Behavior on opacity { NumberAnimation { duration: 200 } }
                 readonly property real total: term.scrollbackLines + term.rows
@@ -238,9 +242,9 @@ FocusScope {
             anchors.horizontalCenter: parent.horizontalCenter
             font.family: Style.fontFamily
             font.pixelSize: Style.smallFontSize
-            color: Style.red
+            color: Style.errorText
         }
-        border.color: activeFocus ? Style.tint(0.8) : Qt.rgba(1, 1, 1, 0.12)
+        border.color: activeFocus ? Style.focusRing : Qt.rgba(1, 1, 1, 0.12)
         activeFocusOnTab: true
 
         Keys.onReturnPressed: pane.reconnectRequested()
@@ -309,7 +313,7 @@ FocusScope {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        height: 44
+        height: 52
         color: Style.toolbar
         Rectangle { width: parent.width; height: 1; color: Style.separator }
         Flickable {
@@ -339,9 +343,13 @@ FocusScope {
                             && ((modelData.sticky === "ctrl" && pane.terminal.stickyCtrl)
                                 || (modelData.sticky === "alt" && pane.terminal.stickyAlt))
                         width: Math.max(44, keyLabel.implicitWidth + 20)
-                        height: 36
+                        height: 44
                         radius: 7
                         color: on ? Style.accent : keyArea.pressed ? Style.fillPressed : Style.fill
+                        Accessible.role: Accessible.Button
+                        Accessible.name: modelData.label
+                        Accessible.checkable: !!modelData.sticky
+                        Accessible.checked: on
                         Text {
                             id: keyLabel
                             anchors.centerIn: parent
@@ -349,7 +357,7 @@ FocusScope {
                             font.family: Style.fontFamily
                             font.pixelSize: Style.fontSize
                             font.weight: Font.Medium
-                            color: parent.on ? Style.onAccent : Style.label
+                            color: parent.on ? Style.accentText : Style.label
                         }
                         MouseArea {
                             id: keyArea

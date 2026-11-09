@@ -15,6 +15,7 @@ TSheet {
 
     readonly property var rows: [
         ["Ctrl+Shift+K", qsTr("Search hosts and serial ports")],
+        ["Enter / E / Delete", qsTr("In the host list: connect, edit, or delete")],
         ["Ctrl+Shift+T", qsTr("New tab with a local shell")],
         ["Ctrl+Shift+N", qsTr("New host")],
         ["Ctrl+Shift+E", qsTr("Split right")],
@@ -25,9 +26,14 @@ TSheet {
         ["Ctrl+Shift+W", qsTr("Close the pane")],
         ["Ctrl+PgUp / PgDn", qsTr("Previous or next tab")],
         ["Ctrl+Shift+S", qsTr("Snippets")],
+        ["Shift+Enter", qsTr("In Snippets: send to every pane in the tab")],
         ["Ctrl+Shift+F", qsTr("Files on this host, beside the pane")],
+        ["F2 / Delete", qsTr("In the file list: rename or delete")],
+        ["Backspace", qsTr("In the file list: the enclosing folder")],
         ["Ctrl+Shift+A", qsTr("Ask Claude for a command")],
         ["Ctrl+Shift+C / V", qsTr("Copy or paste")],
+        ["Shift+PgUp / PgDn", qsTr("Scroll back through what the terminal printed")],
+        ["Shift+Home / End", qsTr("Jump to the oldest or newest line")],
         ["Ctrl+= / − / 0", qsTr("Bigger, smaller, or default text")],
         ["Ctrl+Shift+B", qsTr("Show or hide the sidebar")],
         ["Ctrl+,", qsTr("Settings")],
@@ -47,7 +53,7 @@ TSheet {
         id: scroll
         clip: true
         contentWidth: availableWidth
-        ScrollBar.vertical: TScrollBar { parent: scroll; x: scroll.width - width; height: scroll.height }
+        ScrollBar.vertical: TScrollBar { parent: scroll; x: scroll.mirrored ? 0 : scroll.width - width; height: scroll.height }
 
         ColumnLayout {
             x: 20
@@ -64,6 +70,8 @@ TSheet {
                     implicitHeight: 36
                     radius: 7
                     color: index % 2 === 0 ? Qt.rgba(1, 1, 1, 0.035) : "transparent"
+                    Accessible.role: Accessible.ListItem
+                    Accessible.name: modelData[1] + ": " + modelData[0]
 
                     RowLayout {
                         anchors.fill: parent
@@ -74,12 +82,15 @@ TSheet {
                             Layout.fillWidth: true
                             text: line.modelData[1]
                             elide: Text.ElideRight
+                            horizontalAlignment: Text.AlignLeft
                             font.family: Style.fontFamily
                             font.pixelSize: Style.fontSize
                             color: Style.label
                         }
                         Row {
                             spacing: 3
+                            // Key combinations read left to right in every language.
+                            LayoutMirroring.enabled: false
                             Repeater {
                                 model: dialog.keys(line.modelData[0])
                                 delegate: Rectangle {
