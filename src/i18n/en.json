@@ -1,3 +1,6 @@
 {
-  "Close %n sessions and quit?": { "one": "Close %n session and quit?", "other": "Close %n sessions and quit?" }
+  "Close %n sessions and quit?": { "one": "Close %n session and quit?", "other": "Close %n sessions and quit?" },
+  "%n sessions in it are still running.": { "one": "%n session in it is still running.", "other": "%n sessions in it are still running." },
+  "%n items": { "one": "%n item", "other": "%n items" },
+  "Connection lost. Reconnecting in %n seconds…": { "one": "Connection lost. Reconnecting in %n second…", "other": "Connection lost. Reconnecting in %n seconds…" }
 }

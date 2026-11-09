@@ -76,6 +76,7 @@ TSheet {
             id: request
             Layout.fillWidth: true
             iconName: "sparkle"
+            label: qsTr("What do you want to do?")
             placeholderText: qsTr("Find the 10 biggest files under /var, sorted")
             enabled: assistant.route !== ""
             onAccepted: dialog.ask()
@@ -120,8 +121,10 @@ TSheet {
             wrapMode: Text.Wrap
             font.family: Style.fontFamily
             font.pixelSize: Style.fontSize
-            color: Style.red
+            color: Style.errorText
             text: dialog.error
+            Accessible.role: Accessible.AlertMessage
+            Accessible.name: text
         }
 
         // The answer: editable before it's used.
@@ -134,7 +137,7 @@ TSheet {
                 implicitHeight: commandField.implicitHeight + 16
                 radius: 8
                 color: Style.terminalBackground
-                border.color: dialog.risky ? Style.orange : Qt.rgba(1, 1, 1, 0.12)
+                border.color: dialog.risky ? Style.orange : Style.fieldBorder
                 TextArea {
                     id: commandField
                     anchors.fill: parent
@@ -142,9 +145,14 @@ TSheet {
                     wrapMode: TextEdit.Wrap
                     font.family: Style.terminalFamily
                     font.pixelSize: backend.fontSize
-                    color: Style.label
+                    // On the terminal's background, so in the terminal's
+                    // text color: a light scheme would hide the interface's.
+                    color: Style.terminalForeground
+                    selectionColor: Style.tint(0.45)
+                    selectedTextColor: Style.terminalForeground
                     selectByMouse: true
                     background: null
+                    Accessible.name: qsTr("Suggested command")
                     Keys.onReturnPressed: event => {
                         if (event.modifiers & Qt.ControlModifier)
                             dialog.insert(true)
@@ -158,7 +166,7 @@ TSheet {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 6
-                Icon { visible: dialog.risky; name: "warning"; size: 13; opacity: 0.9 }
+                Icon { visible: dialog.risky; name: "warning"; size: 13; color: Style.orange }
                 Text {
                     Layout.fillWidth: true
                     wrapMode: Text.Wrap

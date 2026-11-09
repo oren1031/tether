@@ -86,6 +86,39 @@ TSheet {
         error = backend.saveProfile(profile())
         if (!error)
             close()
+        else
+            focusFault()
+    }
+
+    // Puts the cursor in the field the error is about: the first required
+    // one left empty, or the one holding the value the error quotes.
+    function focusFault() {
+        const quoted = /“([^”]*)”/.exec(error)
+        const value = quoted ? quoted[1] : null
+        let field = null
+        if (!name.text.trim())
+            field = name
+        else if (kind === "ssh") {
+            if (!host.text.trim() || value === host.text.trim())
+                field = host
+            else if (value !== null && value === user.text.trim())
+                field = user
+            else if (value !== null && value === jump.text.trim())
+                field = jump
+            else if (value !== null && options.text.split("\n").some(line => line.trim() === value))
+                field = options
+            else if (!(parseInt(port.text) >= 1 && parseInt(port.text) <= 65535))
+                field = port
+        } else if (!device.editText.trim()) {
+            field = device
+        } else if (!(parseInt(baud.editText) >= 50)) {
+            field = baud
+        }
+        if (field) {
+            field.forceActiveFocus()
+            if (field.selectAll)
+                field.selectAll()
+        }
     }
 
     ListModel { id: forwards }
@@ -96,9 +129,8 @@ TSheet {
         title: qsTr("Choose a private key")
         onAccepted: {
             const result = backend.importKey(selectedFile)
-            if (result.error)
-                dialog.error = result.error
-            else
+            dialog.error = result.error || ""
+            if (!result.error)
                 identity.text = result.path
         }
     }
@@ -148,7 +180,7 @@ TSheet {
         id: scroll
         clip: true
         contentWidth: availableWidth
-        ScrollBar.vertical: TScrollBar { parent: scroll; x: scroll.width - width; height: scroll.height }
+        ScrollBar.vertical: TScrollBar { parent: scroll; x: scroll.mirrored ? 0 : scroll.width - width; height: scroll.height }
 
         ColumnLayout {
             x: 20
@@ -159,7 +191,9 @@ TSheet {
                 FormLabel { text: qsTr("Name") }
                 TField {
                     id: name
+                    objectName: "nameField"
                     Layout.fillWidth: true
+                    label: qsTr("Name")
                     placeholderText: dialog.kind === "ssh" ? qsTr("web-01") : qsTr("ESP32 console")
                     onAccepted: dialog.save()
                 }
@@ -172,13 +206,16 @@ TSheet {
                     spacing: 8
                     TField {
                         id: host
+                        objectName: "hostField"
                         Layout.fillWidth: true
+                        label: qsTr("Host")
                         placeholderText: qsTr("Host or address")
                         onAccepted: dialog.save()
                     }
                     TField {
                         id: port
                         Layout.preferredWidth: 72
+                        label: qsTr("Port")
                         placeholderText: qsTr("Port")
                         horizontalAlignment: TextInput.AlignHCenter
                         inputMethodHints: Qt.ImhDigitsOnly
@@ -191,6 +228,7 @@ TSheet {
                     id: user
                     visible: dialog.kind === "ssh"
                     Layout.fillWidth: true
+                    label: qsTr("User")
                     placeholderText: login.currentIndex > 0 ? qsTr("From the login: %1").arg(backend.identities[login.currentIndex - 1].user || qsTr("none"))
                                                             : Style.touch ? qsTr("Your user on the server") : qsTr("From ~/.ssh/config or your login")
                     onAccepted: dialog.save()
@@ -200,6 +238,7 @@ TSheet {
                     id: login
                     visible: dialog.kind === "ssh"
                     Layout.fillWidth: true
+                    label: qsTr("Login")
                     model: [qsTr("None (ssh asks, or uses your keys)")].concat(backend.identities.map(i => i.name + (i.user ? " (" + i.user + ")" : "")))
                 }
 
@@ -209,6 +248,7 @@ TSheet {
                     id: device
                     visible: dialog.kind === "serial"
                     Layout.fillWidth: true
+                    label: qsTr("Device")
                     editable: true
                     model: serialPorts.devices.map(d => d.stablePath)
                 }
@@ -217,6 +257,7 @@ TSheet {
                     id: baud
                     visible: dialog.kind === "serial"
                     Layout.fillWidth: true
+                    label: qsTr("Baud rate")
                     editable: true
                     model: dialog.bauds
                     validator: IntValidator { bottom: 50; top: 16000000 }
@@ -232,6 +273,7 @@ TSheet {
                     Layout.fillWidth: true
                     spacing: 10
                     TSegmented {
+                        label: qsTr("Connect with")
                         model: [{ value: "ssh", text: "ssh" }, { value: "mosh", text: "mosh" }]
                         value: dialog.transport
                         onActivated: v => dialog.transport = v
@@ -244,22 +286,26 @@ TSheet {
                         color: dialog.transport === "mosh" && !backend.moshAvailable ? Style.orange : Style.tertiaryLabel
                         text: dialog.transport === "mosh"
                               ? (backend.moshAvailable ? qsTr("Survives sleep and network changes. Needs mosh on the server too.")
-                                                       : qsTr("mosh isn't installed here: sudo pacman -S mosh"))
+                                                       : qsTr("mosh isn't installed here. Install the mosh package."))
                               : qsTr("Works everywhere.")
                     }
                 }
                 Spacer {}
                 TCheck {
                     id: persistent
+                    objectName: "keepRunning"
                     Layout.fillWidth: true
                     text: qsTr("Keep the session running on the server (tmux)")
                 }
-                Spacer {}
+                // Hidden along with the note it sits beside, or the grid
+                // below would shift by a cell.
+                Spacer { visible: !Style.compact && persistent.checked }
                 Text {
                     Layout.fillWidth: true
                     Layout.leftMargin: 26
                     Layout.topMargin: Style.compact ? 0 : -8
                     visible: persistent.checked
+                    horizontalAlignment: Text.AlignLeft
                     wrapMode: Text.Wrap
                     font.family: Style.fontFamily
                     font.pixelSize: Style.smallFontSize
@@ -269,6 +315,7 @@ TSheet {
                 Spacer { visible: !Style.compact && dialog.transport === "ssh" }
                 TCheck {
                     id: reconnect
+                    objectName: "reconnect"
                     visible: dialog.transport === "ssh"
                     Layout.fillWidth: true
                     text: qsTr("Reconnect when the connection drops")
@@ -313,6 +360,7 @@ TSheet {
                     TField {
                         id: identity
                         Layout.fillWidth: true
+                        label: qsTr("Key file")
                         placeholderText: qsTr("~/.ssh/id_ed25519 (optional)")
                         onAccepted: dialog.save()
                     }
@@ -325,6 +373,7 @@ TSheet {
                 TField {
                     id: jump
                     Layout.fillWidth: true
+                    label: qsTr("Jump host")
                     placeholderText: qsTr("user@bastion (optional)")
                     onAccepted: dialog.save()
                 }
@@ -339,6 +388,7 @@ TSheet {
                     TTextArea {
                         id: options
                         Layout.fillWidth: true
+                        label: qsTr("ssh options")
                         Layout.minimumHeight: 64
                         placeholderText: "ServerAliveInterval=30"
                     }
@@ -367,6 +417,7 @@ TSheet {
                             spacing: 6
                             TCombo {
                                 Layout.preferredWidth: 104
+                                label: qsTr("Kind of forward")
                                 textRole: "text"
                                 valueRole: "value"
                                 model: [{ value: "L", text: qsTr("Local") }, { value: "R", text: qsTr("Remote") },
@@ -377,6 +428,7 @@ TSheet {
                             TField {
                                 Layout.fillWidth: true
                                 text: forwardRow.spec
+                                label: qsTr("Forward")
                                 font.family: Style.monoFamily
                                 font.pixelSize: 12
                                 placeholderText: forwardRow.type === "D" ? qsTr("Port, like 1080") : qsTr("8080:localhost:80")
@@ -387,16 +439,22 @@ TSheet {
                                 iconName: "close"
                                 iconSize: 12
                                 onClicked: forwards.remove(forwardRow.index)
-                                ToolTip.visible: hovered
-                                ToolTip.text: qsTr("Remove")
+                                label: qsTr("Remove this forward")
                             }
                         }
                     }
-                    TButton {
-                        kind: "plain"
-                        leftPadding: 0
-                        text: qsTr("Add forward")
-                        onClicked: forwards.append({ type: "L", spec: "" })
+                    // In a row with room to spare: a column holding only a
+                    // button can't grow, and the label column would take up
+                    // the slack and drift toward the middle.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        TButton {
+                            kind: "plain"
+                            leftPadding: 0
+                            text: qsTr("Add forward")
+                            onClicked: forwards.append({ type: "L", spec: "" })
+                        }
+                        Item { Layout.fillWidth: true }
                     }
                 }
             }
@@ -407,6 +465,7 @@ TSheet {
                 TCombo {
                     id: dataBits
                     Layout.fillWidth: true
+                    label: qsTr("Data bits")
                     textRole: "text"
                     valueRole: "value"
                     model: [{ value: 8, text: "8" }, { value: 7, text: "7" }, { value: 6, text: "6" }, { value: 5, text: "5" }]
@@ -415,6 +474,7 @@ TSheet {
                 TCombo {
                     id: parity
                     Layout.fillWidth: true
+                    label: qsTr("Parity")
                     textRole: "text"
                     valueRole: "value"
                     model: [{ value: "none", text: qsTr("None") }, { value: "even", text: qsTr("Even") },
@@ -424,6 +484,7 @@ TSheet {
                 TCombo {
                     id: stopBits
                     Layout.fillWidth: true
+                    label: qsTr("Stop bits")
                     textRole: "text"
                     valueRole: "value"
                     model: [{ value: 1, text: "1" }, { value: 2, text: "2" }]
@@ -432,6 +493,7 @@ TSheet {
                 TCombo {
                     id: flow
                     Layout.fillWidth: true
+                    label: qsTr("Flow control")
                     textRole: "text"
                     valueRole: "value"
                     model: [{ value: "none", text: qsTr("None") }, { value: "hardware", text: qsTr("Hardware (RTS/CTS)") },
@@ -441,6 +503,7 @@ TSheet {
                 TCombo {
                     id: enter
                     Layout.fillWidth: true
+                    label: qsTr("Enter sends")
                     textRole: "text"
                     valueRole: "value"
                     model: [{ value: "cr", text: "CR" }, { value: "lf", text: "LF" }, { value: "crlf", text: "CR LF" }]
@@ -471,26 +534,14 @@ TSheet {
                 }
             }
 
-            RowLayout {
-                visible: dialog.error !== ""
-                Layout.fillWidth: true
-                spacing: 6
-                Icon { name: "warning"; size: 14; opacity: 0.9 }
-                Text {
-                    Layout.fillWidth: true
-                    wrapMode: Text.Wrap
-                    font.family: Style.fontFamily
-                    font.pixelSize: Style.fontSize
-                    color: Style.red
-                    text: dialog.error
-                }
-            }
             Item { implicitHeight: 2 }
         }
     }
 
+    // What's wrong stays in view beside the buttons, however far the form
+    // is scrolled.
     footer: Rectangle {
-        implicitHeight: 60
+        implicitHeight: Math.max(60, faultText.implicitHeight + 24)
         color: "transparent"
         Rectangle { width: parent.width; height: 1; color: Style.hairline }
         RowLayout {
@@ -498,12 +549,33 @@ TSheet {
             anchors.leftMargin: 20
             anchors.rightMargin: 20
             spacing: 10
-            Item { Layout.fillWidth: true }
+            Icon {
+                visible: dialog.error !== ""
+                name: "warning"
+                size: 14
+                color: Style.errorText
+            }
+            Text {
+                id: faultText
+                objectName: "hostError"
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                maximumLineCount: 3
+                elide: Text.ElideRight
+                horizontalAlignment: Text.AlignLeft
+                font.family: Style.fontFamily
+                font.pixelSize: Style.fontSize
+                color: Style.errorText
+                text: dialog.error
+                Accessible.role: Accessible.AlertMessage
+                Accessible.name: text
+            }
             TButton {
                 text: qsTr("Cancel")
                 onClicked: dialog.close()
             }
             TButton {
+                objectName: "saveHost"
                 kind: "primary"
                 text: qsTr("Save")
                 onClicked: dialog.save()

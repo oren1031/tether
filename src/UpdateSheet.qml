@@ -65,7 +65,7 @@ TSheet {
             wrapMode: Text.Wrap
             font.family: Style.fontFamily
             font.pixelSize: Style.smallFontSize + 1
-            color: updater.state === "error" ? Style.red : Style.secondaryLabel
+            color: updater.state === "error" ? Style.errorText : Style.secondaryLabel
             text: updater.message
                   + (updater.state === "ready" && updater.installKind === "pacman"
                      ? " " + qsTr("Installing opens a tab where sudo asks for your password; restart Tether when it's done.")

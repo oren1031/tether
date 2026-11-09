@@ -177,6 +177,7 @@ Rectangle {
             Layout.margins: 10
             Layout.bottomMargin: 6
             iconName: "search"
+            label: qsTr("Search hosts")
             placeholderText: Qt.platform.os === "windows" ? qsTr("Search, user@host, or COM3")
                            : Qt.platform.os === "android" ? qsTr("Search, or user@host")
                            : qsTr("Search, user@host, or /dev/…")
@@ -192,6 +193,7 @@ Rectangle {
 
         ListView {
             id: list
+            objectName: "hostList"
             Layout.fillWidth: true
             Layout.fillHeight: true
             leftMargin: 8
@@ -200,6 +202,8 @@ Rectangle {
             clip: true
             model: items
             keyNavigationWraps: false
+            Accessible.role: Accessible.List
+            Accessible.name: qsTr("Hosts and serial ports")
             boundsBehavior: Flickable.StopAtBounds
             highlightMoveDuration: 0
             ScrollBar.vertical: TScrollBar {}
@@ -211,12 +215,16 @@ Rectangle {
                 topPadding: 12
                 bottomPadding: 4
                 leftPadding: 8
+                rightPadding: 8
                 text: section
                 font.family: Style.fontFamily
                 font.pixelSize: Style.smallFontSize
                 font.weight: Font.Bold
                 color: Style.tertiaryLabel
                 elide: Text.ElideRight
+                horizontalAlignment: Text.AlignLeft
+                Accessible.role: Accessible.Heading
+                Accessible.name: section
             }
 
             delegate: ItemDelegate {
@@ -238,11 +246,25 @@ Rectangle {
                 leftPadding: 8
                 rightPadding: 8
                 hoverEnabled: true
+                // A finger taps once to connect and holds for the menu; a
+                // mouse selects, double-clicks, and right-clicks.
                 onClicked: {
                     list.currentIndex = index
+                    if (Style.touch) {
+                        side.connectRequested(JSON.parse(profile))
+                        return
+                    }
                     list.forceActiveFocus()
                 }
-                onDoubleClicked: side.connectRequested(JSON.parse(profile))
+                onDoubleClicked: if (!Style.touch) side.connectRequested(JSON.parse(profile))
+                onPressAndHold: {
+                    if (!Style.touch)
+                        return
+                    list.currentIndex = index
+                    menu.popup(row, Math.min(row.width - 60, 48), row.height - 6)
+                }
+
+                Accessible.name: warn ? name + ", " + detail + ", " + warn : name + ", " + detail
 
                 TapHandler {
                     acceptedButtons: Qt.RightButton
@@ -270,7 +292,7 @@ Rectangle {
                             GradientStop { position: 1; color: side.badgeColor(row.badge) }
                         }
                         border.width: row.strong ? 1 : 0
-                        border.color: Qt.rgba(1, 1, 1, 0.35)
+                        border.color: Style.accentTextSecondary
                         Icon {
                             anchors.centerIn: parent
                             name: side.badgeIcon(row.badge)
@@ -281,13 +303,16 @@ Rectangle {
                         Layout.fillWidth: true
                         spacing: 1
                         Text {
+                            objectName: "hostName"
                             Layout.fillWidth: true
                             text: row.name
                             elide: Text.ElideRight
+                            // At the row's start whatever the name is written in.
+                            horizontalAlignment: Text.AlignLeft
                             font.family: Style.fontFamily
                             font.pixelSize: Style.fontSize
                             font.weight: Font.Medium
-                            color: row.strong ? Style.onAccent : Style.label
+                            color: row.strong ? Style.accentText : Style.label
                         }
                         RowLayout {
                             Layout.fillWidth: true
@@ -296,15 +321,17 @@ Rectangle {
                                 visible: row.warn !== ""
                                 name: "warning"
                                 size: 11
+                                color: row.strong ? Style.accentText : "white"
                                 opacity: 0.8
                             }
                             Text {
                                 Layout.fillWidth: true
                                 text: row.warn ? row.warn + "  ·  " + row.detail : row.detail
                                 elide: Text.ElideMiddle
+                                horizontalAlignment: Text.AlignLeft
                                 font.family: Style.fontFamily
                                 font.pixelSize: Style.smallFontSize
-                                color: row.strong ? Style.onAccentSecondary
+                                color: row.strong ? Style.accentTextSecondary
                                      : row.warn ? Style.orange : Style.secondaryLabel
                             }
                         }
@@ -343,14 +370,24 @@ Rectangle {
 
         // A newer Tether, or one waiting for a restart.
         Rectangle {
+            id: updateBanner
             visible: updater.available || side.updateInstalling
             Layout.fillWidth: true
             Layout.margins: 8
             Layout.bottomMargin: 0
-            implicitHeight: 40
+            implicitHeight: Style.touch ? 48 : 40
             radius: 8
             color: updateArea.containsMouse ? Style.tint(0.28) : Style.tint(0.2)
             border.color: Style.tint(0.45)
+            activeFocusOnTab: true
+            Keys.onReturnPressed: side.updateRequested()
+            Keys.onEnterPressed: side.updateRequested()
+            Keys.onSpacePressed: side.updateRequested()
+            Accessible.role: Accessible.Button
+            Accessible.name: side.updateInstalling ? qsTr("Restart to finish updating")
+                                                   : qsTr("Tether %1 is available").arg(updater.latestVersion)
+            Accessible.onPressAction: side.updateRequested()
+            TFocusRing { visible: updateBanner.activeFocus }
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 10
@@ -376,8 +413,9 @@ Rectangle {
                         font.family: Style.fontFamily
                         font.pixelSize: Style.smallFontSize
                         color: Style.secondaryLabel
-                        text: side.updateInstalling ? qsTr("Click when the install tab is done")
-                                                    : qsTr("Click to see what's new")
+                        text: side.updateInstalling ? (Style.touch ? qsTr("Tap when the install tab is done")
+                                                                   : qsTr("Click when the install tab is done"))
+                                                    : Style.touch ? qsTr("Tap to see what's new") : qsTr("Click to see what's new")
                     }
                 }
             }
@@ -405,9 +443,8 @@ Rectangle {
                 kind: "toolbar"
                 iconName: "plus"
                 checked: addMenu.visible
-                ToolTip.visible: hovered && !addMenu.visible
-                ToolTip.delay: 600
-                ToolTip.text: qsTr("New host or serial port")
+                label: addMenu.visible ? "" : qsTr("New host or serial port")
+                Accessible.name: qsTr("New host or serial port")
                 onClicked: addMenu.popup(this, 0, -addMenu.implicitHeight - 4)
             }
             TButton {
@@ -421,9 +458,7 @@ Rectangle {
                 kind: "toolbar"
                 iconName: "gear"
                 iconSize: 17
-                ToolTip.visible: hovered
-                ToolTip.delay: 600
-                ToolTip.text: qsTr("Settings")
+                label: qsTr("Settings")
                 onClicked: side.settingsRequested()
             }
             TButton {
@@ -431,9 +466,7 @@ Rectangle {
                 kind: "toolbar"
                 iconName: "keyboard"
                 iconSize: 17
-                ToolTip.visible: hovered
-                ToolTip.delay: 600
-                ToolTip.text: qsTr("Keyboard shortcuts")
+                label: qsTr("Keyboard shortcuts")
                 onClicked: side.shortcutsRequested()
             }
         }
@@ -444,6 +477,9 @@ Rectangle {
         TMenuItem { text: qsTr("New host…"); onTriggered: side.newRequested("ssh") }
         TMenuItem { text: qsTr("New serial port…"); onTriggered: side.newRequested("serial") }
     }
+
+    // For tests: whether the host menu is showing.
+    readonly property alias menuOpen: menu.visible
 
     TMenu {
         id: menu

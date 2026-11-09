@@ -25,11 +25,15 @@ ApplicationWindow {
     palette.toolTipBase: Style.popover
     palette.toolTipText: Style.label
     palette.highlight: Style.accent
-    palette.highlightedText: Style.onAccent
+    palette.highlightedText: Style.accentText
 
     // Phones and narrow windows: the sidebar takes the whole width while it's
     // open and steps aside once a session starts.
     readonly property bool narrow: width < 720
+    // Right-to-left languages mirror everything in the window, sheets and
+    // menus included; the Translator sets the application's layout direction.
+    LayoutMirroring.enabled: Style.mirrored
+    LayoutMirroring.childrenInherit: true
     readonly property bool touch: backend.touchUi
     Binding { target: Style; property: "compact"; value: win.width < 600 }
     // Phones draw under the status and navigation bars, and the keyboard
@@ -56,6 +60,13 @@ ApplicationWindow {
     property bool sidebarVisible: true
     onNarrowChanged: if (narrow && tabModel.count > 0) sidebarVisible = false
     property bool quitting: false
+    // For tests: the sheets, the sidebar, and how many tabs are open.
+    readonly property alias alert: message
+    readonly property alias hostSheet: hostDialog
+    readonly property alias settingsSheet: settingsDialog
+    readonly property alias askSheet: askDialog
+    readonly property alias hostsSidebar: sidebar
+    readonly property alias tabCount: tabModel.count
     readonly property var currentPage: tabs.currentIndex >= 0 && tabs.currentIndex < pages.count
                                        ? pages.itemAt(tabs.currentIndex) : null
     readonly property bool dialogOpen: hostDialog.visible || snippetsDialog.visible || shortcutsDialog.visible
@@ -131,9 +142,25 @@ ApplicationWindow {
         Qt.callLater(focusActivePane)
     }
 
-    function closeTab(index) {
+    function pageIndex(page) {
+        for (let i = 0; i < pages.count; ++i)
+            if (pages.itemAt(i) === page)
+                return i
+        return -1
+    }
+
+    // Closing a tab whose sessions are still running asks first, by the same
+    // setting as quitting; sure skips the question.
+    function closeTab(index, sure) {
         if (index < 0 || index >= tabModel.count)
             return
+        const page = pages.itemAt(index)
+        const live = page ? page.liveCount() : 0
+        if (!sure && live > 0 && backend.settings.confirmQuit) {
+            showMessage(qsTr("Close this tab?"), qsTr("%n sessions in it are still running.", "", live), qsTr("Close tab"),
+                        () => closeTab(pageIndex(page), true), true)
+            return
+        }
         tabModel.remove(index)
         // On a phone the last session closing goes back to the list of hosts.
         if (narrow && tabModel.count === 0)
@@ -142,11 +169,7 @@ ApplicationWindow {
     }
 
     function removePage(page) {
-        for (let i = 0; i < pages.count; ++i)
-            if (pages.itemAt(i) === page) {
-                closeTab(i)
-                return
-            }
+        closeTab(pageIndex(page), true)
     }
 
     function focusActivePane() {
@@ -182,6 +205,12 @@ ApplicationWindow {
     }
 
     onClosing: close => {
+        // Back on a phone, in a session: to the list of hosts, not out of Tether.
+        if (!quitting && touch && narrow && !sidebarVisible) {
+            close.accepted = false
+            sidebarVisible = true
+            return
+        }
         if (!quitting && sessionCount() > 0 && backend.settings.confirmQuit) {
             close.accepted = false
             requestQuit()
@@ -283,13 +312,9 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+-"; context: Qt.ApplicationShortcut; onActivated: backend.fontSize = backend.fontSize - 1 }
     Shortcut { sequence: "Ctrl+0"; context: Qt.ApplicationShortcut; onActivated: backend.fontSize = 13 }
 
-    // Right-to-left languages mirror the window; the Translator sets the
-    // application's layout direction.
     RowLayout {
         anchors.fill: parent
         spacing: 0
-        LayoutMirroring.enabled: Qt.application.layoutDirection === Qt.RightToLeft
-        LayoutMirroring.childrenInherit: true
 
         Sidebar {
             id: sidebar
@@ -329,7 +354,7 @@ ApplicationWindow {
             // The toolbar: the sidebar button, the tabs, and a new tab button.
             Rectangle {
                 Layout.fillWidth: true
-                implicitHeight: 40
+                implicitHeight: Style.touch ? 48 : 40
                 color: Style.toolbar
 
                 Rectangle {
@@ -351,9 +376,7 @@ ApplicationWindow {
                         iconName: "sidebar"
                         iconSize: 17
                         checked: false
-                        ToolTip.visible: hovered
-                        ToolTip.delay: 600
-                        ToolTip.text: qsTr("Show or hide the sidebar")
+                        label: Style.touch ? qsTr("Hosts") : qsTr("Show or hide the sidebar")
                         onClicked: { win.sidebarVisible = !win.sidebarVisible; win.focusActivePane() }
                     }
 
@@ -380,6 +403,7 @@ ApplicationWindow {
                                     height: 30
                                     hoverEnabled: true
                                     onClicked: win.focusActivePane()
+                                    Accessible.name: title
 
                                     TapHandler {
                                         acceptedButtons: Qt.MiddleButton
@@ -415,6 +439,9 @@ ApplicationWindow {
                                             // No hover on touch screens: the current tab always shows it.
                                             visible: tab.hovered || (Style.touch && tab.checked)
                                             color: closeArea.containsMouse ? Qt.rgba(1, 1, 1, 0.12) : "transparent"
+                                            Accessible.role: Accessible.Button
+                                            Accessible.name: qsTr("Close tab")
+                                            Accessible.onPressAction: win.closeTab(tab.index)
                                             Icon {
                                                 anchors.centerIn: parent
                                                 name: "close"
@@ -424,8 +451,8 @@ ApplicationWindow {
                                             MouseArea {
                                                 id: closeArea
                                                 anchors.fill: parent
-                                                // A finger needs more to aim at than a pointer.
-                                                anchors.margins: Style.touch ? -9 : 0
+                                                // A finger needs more to aim at than a pointer: 44 across.
+                                                anchors.margins: Style.touch ? -13 : 0
                                                 hoverEnabled: true
                                                 onClicked: win.closeTab(tab.index)
                                             }
@@ -441,9 +468,7 @@ ApplicationWindow {
                         iconName: "folder"
                         iconSize: 16
                         visible: win.activeIsSsh && backend.sftpAvailable
-                        ToolTip.visible: hovered
-                        ToolTip.delay: 600
-                        ToolTip.text: qsTr("Files on this host (Ctrl+Shift+F)")
+                        label: Style.touch ? qsTr("Files on this host") : qsTr("Files on this host (Ctrl+Shift+F)")
                         onClicked: win.showFiles()
                     }
                     TButton {
@@ -451,17 +476,26 @@ ApplicationWindow {
                         iconName: "sparkle"
                         iconSize: 16
                         visible: win.currentPage !== null
-                        ToolTip.visible: hovered
-                        ToolTip.delay: 600
-                        ToolTip.text: qsTr("Ask for a command (Ctrl+Shift+A)")
+                        label: Style.touch ? qsTr("Ask for a command") : qsTr("Ask for a command (Ctrl+Shift+A)")
                         onClicked: askDialog.openFor(win.currentPage)
+                    }
+                    // Splitting, zooming, and closing panes, for a mouse or a finger.
+                    TButton {
+                        id: paneButton
+                        objectName: "paneButton"
+                        kind: "toolbar"
+                        iconName: "split"
+                        iconSize: 16
+                        visible: win.currentPage !== null
+                        checked: paneMenu.visible
+                        label: paneMenu.visible ? "" : qsTr("Panes")
+                        Accessible.name: qsTr("Panes")
+                        onClicked: paneMenu.popup(paneButton, 0, paneButton.height + 4)
                     }
                     TButton {
                         kind: "toolbar"
                         iconName: "plus"
-                        ToolTip.visible: hovered
-                        ToolTip.delay: 600
-                        ToolTip.text: qsTr("New tab with a local shell")
+                        label: qsTr("New tab with a local shell")
                         onClicked: win.openTab({ kind: "local" })
                     }
                 }
@@ -542,11 +576,25 @@ ApplicationWindow {
                         Layout.topMargin: 24
                         spacing: 10
                         TButton { text: qsTr("Local shell"); iconName: "terminal"; onClicked: win.openTab({ kind: "local" }) }
-                        TButton { text: qsTr("New host"); kind: "primary"; iconName: "plus"; onClicked: hostDialog.openFor({ kind: "ssh" }) }
+                        TButton { objectName: "newHost"; text: qsTr("New host"); kind: "primary"; iconName: "plus"; onClicked: hostDialog.openFor({ kind: "ssh" }) }
                     }
                 }
             }
         }
+    }
+
+    TMenu {
+        id: paneMenu
+        TMenuItem { text: qsTr("Split right"); onTriggered: win.currentPage.split(Qt.Horizontal) }
+        TMenuItem { text: qsTr("Split down"); onTriggered: win.currentPage.split(Qt.Vertical) }
+        TMenuItem {
+            text: win.currentPage && win.currentPage.zoomed ? qsTr("Show all panes") : qsTr("Zoom this pane")
+            enabled: win.currentPage !== null && win.currentPage.paneCount > 1
+            onTriggered: win.currentPage.toggleZoom()
+        }
+        TSeparator {}
+        TMenuItem { text: qsTr("Close this pane"); onTriggered: win.currentPage.closePane(win.currentPage.activePane) }
+        onClosed: win.focusActivePane()
     }
 
     HostDialog {
@@ -557,6 +605,7 @@ ApplicationWindow {
     SnippetsDialog {
         id: snippetsDialog
         onClosed: win.focusActivePane()
+        onConfirmRequested: (heading, text, label, action) => win.showMessage(heading, text, label, action, true)
     }
 
     AskDialog { id: askDialog }
@@ -570,6 +619,7 @@ ApplicationWindow {
         id: settingsDialog
         onClosed: win.focusActivePane()
         onShortcutsRequested: shortcutsDialog.open()
+        onConfirmRequested: (heading, text, label, action) => win.showMessage(heading, text, label, action, true)
         onUpdateRequested: updateSheet.open()
         onNewProfileRequested: kind => hostDialog.openFor({ kind: kind })
         onEditProfileRequested: profile => hostDialog.openFor(profile)
@@ -613,6 +663,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.bottomMargin: 20
                 Layout.topMargin: 16
+                objectName: "alertCancel"
                 visible: message.confirmLabel !== ""
                 text: qsTr("Cancel")
                 onClicked: message.close()
@@ -621,6 +672,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.bottomMargin: 20
                 Layout.topMargin: 16
+                objectName: "alertConfirm"
                 kind: message.destructive ? "danger" : "primary"
                 text: message.confirmLabel || qsTr("OK")
                 onClicked: {
