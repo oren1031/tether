@@ -975,6 +975,49 @@ private slots:
         QCOMPARE(Translator::pluralCategory("ar", 11), QString("many"));
     }
 
+    void translatorFollowsThePickInSettings()
+    {
+        QTemporaryDir dir;
+        write(dir.path() + "/language", "pt\n");
+        write(dir.path() + "/pt.json", R"({"Save": "Guardar"})");
+        write(dir.path() + "/he.json", R"({"Save": "שמירה"})");
+
+        Translator translator(dir.path() + "/language", dir.path());
+        QCOMPARE(translator.language(), QString("pt"));
+        QSignalSpy changed(&translator, &Translator::changed);
+
+        // A pick wins over the system's language and mirrors the window.
+        translator.setPreference("he");
+        QCOMPARE(translator.language(), QString("he"));
+        QCOMPARE(translator.translate("Main", "Save"), QString("שמירה"));
+        QCOMPARE(QGuiApplication::layoutDirection(), Qt::RightToLeft);
+        QVERIFY(changed.count() >= 1);
+
+        // Anything that isn't a language code means "follow the system".
+        translator.setPreference("../../etc/passwd");
+        QCOMPARE(translator.preference(), QString());
+        QCOMPARE(translator.language(), QString("pt"));
+        QCOMPARE(QGuiApplication::layoutDirection(), Qt::LeftToRight);
+
+        QStringList codes;
+        for (const auto &language : translator.languages())
+            codes << language.toMap().value("code").toString();
+        QCOMPARE(codes, QStringList({"en", "he", "pt"}));
+        QCOMPARE(translator.languages().first().toMap().value("name").toString(), QString("English"));
+    }
+
+    void translatorFindsTheSystemLanguage()
+    {
+        const QStringList available{"en", "he", "pt", "pt-BR"};
+        QCOMPARE(Translator::systemLanguage({"he-IL", "en-US"}, available), QString("he"));
+        QCOMPARE(Translator::systemLanguage({"he_IL"}, available), QString("he"));
+        QCOMPARE(Translator::systemLanguage({"pt-BR"}, available), QString("pt-BR"));
+        QCOMPARE(Translator::systemLanguage({"pt-PT"}, available), QString("pt"));
+        QCOMPARE(Translator::systemLanguage({"zh-Hans-CN", "en-GB"}, available), QString("en"));
+        QCOMPARE(Translator::systemLanguage({"C"}, available), QString("en"));
+        QCOMPARE(Translator::systemLanguage({}, available), QString("en"));
+    }
+
 private:
     static void write(const QString &path, const QByteArray &contents)
     {

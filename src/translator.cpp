@@ -21,14 +21,66 @@ Translator::Translator(const QString &languageFile, const QString &catalogDirect
     reload();
 }
 
+static bool validCode(const QString &code) {
+    static const QRegularExpression valid("^[a-z]{2,3}(-[A-Za-z]{2})?$");
+    return valid.match(code).hasMatch();
+}
+
 // One registry code on the first line; anything else, or no file, is English.
 QString Translator::readLanguage(const QString &path) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly))
         return "en";
     const QString code = QString::fromUtf8(file.readLine()).trimmed();
-    static const QRegularExpression valid("^[a-z]{2,3}(-[A-Za-z]{2})?$");
-    return valid.match(code).hasMatch() ? code : "en";
+    return validCode(code) ? code : "en";
+}
+
+QString Translator::systemLanguage(const QStringList &uiLanguages, const QStringList &available) {
+    for (QString code : uiLanguages) {
+        code.replace('_', '-');
+        // "he-Hebr-IL" and the like: the language and the region are enough.
+        const QStringList parts = code.split('-');
+        const QString base = parts.first().toLower();
+        const QString regional = parts.size() > 1 ? base + "-" + parts.last().toUpper() : base;
+        if (available.contains(regional))
+            return regional;
+        if (available.contains(base))
+            return base;
+    }
+    return "en";
+}
+
+// The catalogs that are compiled in, English first.
+QStringList Translator::available() const {
+    QStringList codes{"en"};
+    for (const QString &file : QDir(m_catalogDirectory).entryList({"*.json"}, QDir::Files, QDir::Name)) {
+        const QString code = file.chopped(5);
+        if (validCode(code) && !codes.contains(code))
+            codes << code;
+    }
+    return codes;
+}
+
+QVariantList Translator::languages() const {
+    QVariantList list;
+    for (const QString &code : available()) {
+        // Qt calls plain English "American English"; a picker wants the short name.
+        QString name = code == "en" ? QStringLiteral("English") : QLocale(code).nativeLanguageName();
+        if (name.isEmpty())
+            name = code;
+        list << QVariantMap{{"code", code}, {"name", name}};
+    }
+    return list;
+}
+
+void Translator::setPreference(const QString &code) {
+    const QString clean = validCode(code) ? code : QString();
+    if (clean == m_preference)
+        return;
+    m_preference = clean;
+    reload();
+    // The picker shows the preference even when the language stays the same.
+    emit changed();
 }
 
 // CLDR cardinal plural categories for whole counts, for Omarchy's languages
@@ -105,8 +157,12 @@ void Translator::reload() {
     if (QFileInfo::exists(m_languageFile))
         m_watcher.addPath(m_languageFile);
 
-    // Catalogs are compiled in, so only a different language needs a reload.
-    const QString language = readLanguage(m_languageFile);
+    // The pick in Settings wins; "System" is Omarchy's language where its
+    // file exists, else the system's own. Catalogs are compiled in, so only
+    // a different language needs a reload.
+    const QString language = !m_preference.isEmpty() ? m_preference
+                             : QFileInfo::exists(m_languageFile) ? readLanguage(m_languageFile)
+                             : systemLanguage(QLocale::system().uiLanguages(), available());
     if (language == m_language)
         return;
 
